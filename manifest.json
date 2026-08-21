@@ -1,0 +1,16 @@
+{
+  "name": "食事栄養トラッカー",
+  "short_name": "栄養トラッカー",
+  "description": "食事の写真から栄養素を分析し、その日に必要な栄養量と比較して不足を教えてくれるアプリ",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#faf5ec",
+  "theme_color": "#3f6b42",
+  "lang": "ja",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

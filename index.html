@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>食事栄養トラッカー</title>
+<meta name="description" content="食事の写真から栄養素を分析し、その日に必要な栄養量と比較するアプリ">
+<meta name="theme-color" content="#3f6b42">
+<link rel="manifest" href="./manifest.json">
+<link rel="apple-touch-icon" href="./icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="栄養トラッカー">
+<link rel="icon" href="./icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700;900&family=Noto+Sans+JP:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div id="app"></div>
+
+  <nav id="tabbar" class="hidden">
+    <button class="tab-btn" data-view="home"><span class="ic-wrap"></span>ホーム</button>
+    <button class="tab-btn" data-view="capture"><span class="ic-wrap"></span>記録</button>
+    <button class="tab-btn" data-view="history"><span class="ic-wrap"></span>履歴</button>
+    <button class="tab-btn" data-view="settings"><span class="ic-wrap"></span>設定</button>
+  </nav>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="./icons.js"></script>
+  <script src="./nutrition.js"></script>
+  <script src="./storage.js"></script>
+  <script src="./api.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
