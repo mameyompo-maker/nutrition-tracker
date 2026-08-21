@@ -19,10 +19,12 @@ function loadProfile() {
 const state = {
   profile: loadProfile(),
   view: null,
-  capture: { file: null, dataUrl: null, analyzing: false, result: null, error: null, note: "", showManual: false },
+  capture: { file: null, dataUrl: null, analyzing: false, result: null, error: null, showManual: false },
   showDetail: false,
   historyOpenDate: null,
   editingProfile: false,
+  obStep: 0,
+  sheet: null,
 };
 
 // 設定フォームでAIサービスを切り替えたとき、入力途中の値を失わないための一時置き場
@@ -33,6 +35,12 @@ function scratchValue(mapName, providerId, fallback) {
   if (typed !== undefined) return typed;
   const saved = state.profile?.[mapName]?.[providerId];
   return saved === undefined || saved === null ? fallback : saved;
+}
+
+function clearFormScratch() {
+  formScratch.apiKeys = {};
+  formScratch.models = {};
+  formScratch.baseUrls = {};
 }
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -49,8 +57,12 @@ function showToast(msg) {
   el.textContent = msg;
   el.classList.add("show");
   clearTimeout(showToast._t);
-  showToast._t = setTimeout(() => el.classList.remove("show"), 2200);
+  showToast._t = setTimeout(() => el.classList.remove("show"), 2400);
 }
+
+const CAPTURE_INITIAL = () => ({
+  file: null, dataUrl: null, analyzing: false, result: null, error: null, showManual: false,
+});
 
 // ---------------- 初期化・ルーティング ----------------
 
@@ -59,19 +71,20 @@ const TAB_ICONS = { home: "home", capture: "camera", history: "calendar", settin
 function init() {
   state.view = state.profile ? "home" : "onboarding";
 
-  // タブバーのアイコンを絵文字からSVGに差し替え
   $$(".tab-btn").forEach((btn) => {
     const wrap = $(".ic-wrap", btn);
-    if (wrap) wrap.innerHTML = iconHtml(TAB_ICONS[btn.dataset.view], 17);
+    if (wrap) wrap.innerHTML = iconHtml(TAB_ICONS[btn.dataset.view], 22);
   });
 
   render();
 
-  // イベント委譲（1回だけ登録）
   document.body.addEventListener("click", onBodyClick);
   document.body.addEventListener("change", onBodyChange);
   document.body.addEventListener("submit", onBodySubmit);
   document.addEventListener("paste", onPaste);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && state.sheet) closeSheet();
+  });
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").catch(() => {});
@@ -79,10 +92,9 @@ function init() {
 }
 
 function setView(view) {
+  closeSheet();
   state.view = view;
-  if (view === "capture") {
-    state.capture = { file: null, dataUrl: null, analyzing: false, result: null, error: null, note: "", showManual: false };
-  }
+  if (view === "capture") state.capture = CAPTURE_INITIAL();
   render();
   window.scrollTo(0, 0);
 }
@@ -94,7 +106,9 @@ function render() {
   tabbar.classList.toggle("hidden", !showTabs);
 
   $$(".tab-btn").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.view === state.view);
+    const active = btn.dataset.view === state.view;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-current", active ? "page" : "false");
   });
 
   switch (state.view) {
@@ -111,6 +125,42 @@ function render() {
   if (profileForm) applyProviderUi(profileForm);
 }
 
+// ---------------- シート(手順書などを重ねて開く) ----------------
+
+function openSheet(title, bodyHtml) {
+  state.sheet = { title, body: bodyHtml };
+  renderSheet();
+}
+
+function closeSheet() {
+  if (!state.sheet) return;
+  state.sheet = null;
+  renderSheet();
+}
+
+function renderSheet() {
+  const root = $("#sheet-root");
+  if (!state.sheet) {
+    root.innerHTML = "";
+    root.classList.add("hidden");
+    document.body.classList.remove("sheet-open");
+    return;
+  }
+  root.classList.remove("hidden");
+  document.body.classList.add("sheet-open");
+  root.innerHTML = `
+    <button class="sheet-backdrop" data-action="close-sheet" aria-label="閉じる"></button>
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="${escapeHtml(state.sheet.title)}">
+      <div class="sheet-grabber"></div>
+      <div class="sheet-head">
+        <h2>${escapeHtml(state.sheet.title)}</h2>
+        <button class="icon-btn" data-action="close-sheet" aria-label="閉じる">${iconHtml("close", 14)}</button>
+      </div>
+      <div class="sheet-body">${state.sheet.body}</div>
+    </div>
+  `;
+}
+
 // ---------------- イベントハンドラ ----------------
 
 function onBodyClick(e) {
@@ -122,9 +172,12 @@ function onBodyClick(e) {
   const action = actionEl.dataset.action;
 
   switch (action) {
+    case "close-sheet": closeSheet(); break;
+    case "open-key-guide": openKeyGuide(actionEl); break;
+    case "open-about": openAboutSheet(); break;
     case "open-camera": $("#file-camera").click(); break;
     case "open-library": $("#file-library").click(); break;
-    case "retake": state.capture = { file: null, dataUrl: null, analyzing: false, result: null, error: null, note: "", showManual: false }; render(); break;
+    case "retake": state.capture = CAPTURE_INITIAL(); render(); break;
     case "analyze": doAnalyze(); break;
     case "toggle-manual": state.capture.showManual = !state.capture.showManual; render(); break;
     case "copy-prompt": doCopyPrompt(); break;
@@ -132,15 +185,18 @@ function onBodyClick(e) {
     case "add-log": doAddLog(); break;
     case "delete-log": doDeleteLog(actionEl.dataset.date, actionEl.dataset.id); break;
     case "toggle-detail": state.showDetail = !state.showDetail; render(); break;
+    case "ob-next": gotoObStep(state.obStep + 1); break;
+    case "ob-back": gotoObStep(state.obStep - 1); break;
     case "toggle-history-day": {
       const d = actionEl.dataset.date;
       state.historyOpenDate = state.historyOpenDate === d ? null : d;
       render();
       break;
     }
-    case "edit-profile": state.editingProfile = true; render(); break;
+    case "edit-profile": state.editingProfile = true; render(); window.scrollTo(0, 0); break;
+    case "cancel-edit": state.editingProfile = false; clearFormScratch(); render(); break;
     case "clear-logs": {
-      if (confirm("すべての食事記録を削除します。よろしいですか？（元に戻せません）")) {
+      if (confirm("すべての食事記録を削除します。よろしいですか？(元に戻せません)")) {
         Storage.clearAllLogs();
         showToast("記録を削除しました");
         render();
@@ -236,22 +292,219 @@ function validateProfile(p) {
   return null;
 }
 
+function showFormError(form, message) {
+  const box = $("[data-role=form-error]", form);
+  if (!box) return;
+  if (!message) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  box.classList.remove("hidden");
+  box.innerHTML = `${iconHtml("info", 16)}<span>${escapeHtml(message)}</span>`;
+}
+
 function submitProfileForm(form, isOnboarding) {
   const p = readProfileForm(form);
   const err = validateProfile(p);
-  const errBox = $("#form-error", form);
   if (err) {
-    if (errBox) { errBox.textContent = err; errBox.classList.remove("hidden"); }
+    showFormError(form, err);
+    if (isOnboarding && state.obStep !== 1) gotoObStep(1);
     return;
   }
+  showFormError(form, null);
   state.profile = p;
   state.editingProfile = false;
-  formScratch.apiKeys = {};
-  formScratch.models = {};
-  formScratch.baseUrls = {};
+  clearFormScratch();
   Storage.saveProfile(p);
-  showToast(isOnboarding ? "設定を保存しました" : "プロフィールを更新しました");
+  showToast(isOnboarding ? "準備ができました" : "変更を保存しました");
   setView("home");
+}
+
+// ---------------- オンボーディングの手順送り ----------------
+
+const OB_LAST_STEP = 2;
+
+function obFooterHtml(step) {
+  if (step === 0) {
+    return `<button type="button" class="btn btn-primary" data-action="ob-next">はじめる</button>`;
+  }
+  if (step === OB_LAST_STEP) {
+    return `
+      <button type="submit" class="btn btn-primary">この内容ではじめる</button>
+      <button type="button" class="btn btn-plain" data-action="ob-back">戻る</button>
+    `;
+  }
+  return `
+    <button type="button" class="btn btn-primary" data-action="ob-next">次へ</button>
+    <button type="button" class="btn btn-plain" data-action="ob-back">戻る</button>
+  `;
+}
+
+// 画面を作り直すと入力途中の値が消えるので、手順送りはDOMの表示切り替えだけで行う
+function gotoObStep(n) {
+  const form = $("#onboarding-form");
+  if (!form) return;
+  const step = Math.max(0, Math.min(OB_LAST_STEP, n));
+
+  if (step > state.obStep && state.obStep === 1) {
+    const err = validateProfile(readProfileForm(form));
+    if (err) { showFormError(form, err); return; }
+  }
+  showFormError(form, null);
+
+  state.obStep = step;
+  $$(".ob-step", form).forEach((sec) => sec.classList.toggle("on", Number(sec.dataset.step) === step));
+  $$(".ob-progress i", form).forEach((dot, i) => dot.classList.toggle("on", i === step));
+  const footer = $("[data-role=ob-actions]", form);
+  if (footer) footer.innerHTML = obFooterHtml(step);
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+// ---------------- AI接続まわりのUI ----------------
+
+// 選ばれているAIサービスに合わせて、フォームの表示内容と値を切り替える
+function applyProviderUi(form) {
+  if (!form) return;
+  const sel = $("[data-role=provider-select]", form);
+  if (!sel) return;
+  const id = sel.value || DEFAULT_PROVIDER;
+  const meta = getProvider(id);
+  const guide = getProviderGuide(id);
+  sel.dataset.current = id;
+
+  const help = $("[data-role=provider-help]", form);
+  if (help) help.textContent = meta.help;
+
+  const cost = $("[data-role=provider-cost]", form);
+  if (cost) {
+    cost.className = `chip ${guide.cost.tone === "paid" ? "paid" : ""}`;
+    cost.innerHTML = `${iconHtml(guide.cost.tone === "paid" ? "info" : "check", 13)} ${escapeHtml(guide.cost.text)}`;
+  }
+
+  const keyLabel = $("[data-role=key-label]", form);
+  if (keyLabel) keyLabel.textContent = meta.keyLabel;
+
+  const keyInput = $("#f-apikey", form);
+  if (keyInput) {
+    keyInput.placeholder = meta.keyPlaceholder;
+    keyInput.value = scratchValue("apiKeys", id, "");
+    keyInput.type = "password";
+  }
+  const toggleBtn = $("[data-action=toggle-key-visibility]", form);
+  if (toggleBtn) toggleBtn.textContent = "表示";
+
+  const baseRow = $("[data-role=baseurl-row]", form);
+  if (baseRow) baseRow.classList.toggle("hidden", !meta.needsBaseUrl);
+  const baseInput = $("[name=baseUrl]", form);
+  if (baseInput) baseInput.value = scratchValue("baseUrls", id, meta.baseUrl || "");
+
+  const modelInput = $("[name=model]", form);
+  if (modelInput) {
+    modelInput.placeholder = meta.defaultModel || "モデル名を入力";
+    modelInput.value = scratchValue("models", id, meta.defaultModel || "");
+  }
+  const datalist = $("#model-suggestions", form);
+  if (datalist) {
+    datalist.innerHTML = meta.models.map((m) => `<option value="${escapeHtml(m)}"></option>`).join("");
+  }
+
+  const testResult = $("[data-role=test-result]", form);
+  if (testResult) {
+    testResult.textContent = "キーとモデル名が正しいか確かめます";
+    testResult.style.color = "";
+  }
+}
+
+// AIサービスを切り替える前に、いま入力されている値を一時保存しておく
+function onProviderChange(sel) {
+  const form = sel.closest("form");
+  const prevId = sel.dataset.current;
+  if (form && prevId) {
+    const keyInput = $("#f-apikey", form);
+    const modelInput = $("[name=model]", form);
+    const baseInput = $("[name=baseUrl]", form);
+    if (keyInput) formScratch.apiKeys[prevId] = keyInput.value;
+    if (modelInput) formScratch.models[prevId] = modelInput.value;
+    if (baseInput) formScratch.baseUrls[prevId] = baseInput.value;
+  }
+  applyProviderUi(form);
+}
+
+// 入力されたキー・モデル名で実際にAPIを1回叩いて、つながるか確かめる
+async function doTestConnection(rowEl) {
+  const form = rowEl.closest("form");
+  if (!form) return;
+  const out = $("[data-role=test-result]", form);
+  const fd = new FormData(form);
+  const providerId = fd.get("provider") || DEFAULT_PROVIDER;
+  const meta = getProvider(providerId);
+  const probe = {
+    provider: providerId,
+    apiKeys: { [providerId]: (fd.get("apiKey") || "").trim() },
+    models: { [providerId]: (fd.get("model") || "").trim() || meta.defaultModel },
+    baseUrls: { [providerId]: (fd.get("baseUrl") || "").trim() || meta.baseUrl || "" },
+  };
+
+  rowEl.disabled = true;
+  if (out) { out.textContent = "確認しています…"; out.style.color = ""; }
+  try {
+    await testAiConnection(probe);
+    if (out) { out.textContent = "接続できました"; out.style.color = "var(--accent)"; }
+  } catch (e) {
+    if (out) { out.textContent = e.message || "接続できませんでした"; out.style.color = "var(--danger)"; }
+  } finally {
+    rowEl.disabled = false;
+  }
+}
+
+// APIキーの取得手順を、画面を離れずに読めるようにシートで開く
+function openKeyGuide(el) {
+  const form = el.closest("form");
+  const sel = form ? $("[data-role=provider-select]", form) : null;
+  const id = (sel && sel.value) || state.profile?.provider || DEFAULT_PROVIDER;
+  openSheet(`${getProvider(id).keyLabel}の取得`, guideHtml(id));
+}
+
+// URLやキーの接頭辞だけ等幅にする(1回の置換で済ませ、入れ子にならないようにする)
+function formatGuideText(text) {
+  return escapeHtml(text).replace(
+    /(https?:\/\/[^\s、。]+|sk-ant-|sk-|AIza|:free)/g,
+    "<code>$1</code>"
+  );
+}
+
+function guideHtml(providerId) {
+  const g = getProviderGuide(providerId);
+  const steps = g.steps
+    .map((s) => `<li>${formatGuideText(s.text)}${
+      s.link
+        ? `<a class="step-link" href="${escapeHtml(s.link.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(s.link.label)}${iconHtml("external", 12)}</a>`
+        : ""
+    }</li>`)
+    .join("");
+  const notes = g.notes
+    .map((n) => `<div class="guide-note ${n.tone === "warn" ? "warn" : ""}">${iconHtml(n.tone === "warn" ? "shield" : "info", 15)}<span>${formatGuideText(n.text)}</span></div>`)
+    .join("");
+
+  return `
+    <p class="guide-lead">${formatGuideText(g.lead)}</p>
+    <div style="margin-bottom:22px;"><span class="chip ${g.cost.tone === "paid" ? "paid" : ""}">${iconHtml(g.cost.tone === "paid" ? "info" : "check", 13)} ${escapeHtml(g.cost.text)}</span></div>
+    <ol class="steps">${steps}</ol>
+    <div class="guide-notes">${notes}</div>
+  `;
+}
+
+function openAboutSheet() {
+  openSheet("このアプリについて", `
+    <p class="guide-lead">写真から栄養を読み取り、あなたに必要な量と比べるためのアプリです。専用のサーバーを持たず、すべてこの端末の中で完結します。</p>
+    <div class="guide-notes">
+      <div class="guide-note">${iconHtml("database", 15)}<span>食事の記録・プロフィール・APIキーは、この端末のブラウザ内(localStorage)にのみ保存されます。開発者のサーバーには送信されません。端末やブラウザを変えると引き継がれません。</span></div>
+      <div class="guide-note">${iconHtml("sparkle", 15)}<span>写真解析のときだけ、写真とAPIキーが、あなたが選んだAIサービスに直接送信されます。経由するサーバーはありません。</span></div>
+      <div class="guide-note warn">${iconHtml("shield", 15)}<span>APIキーはブラウザ内に保存されるため、その端末を使える人には見える形になります。共有の端末では、使い終わったらキーを消してください。</span></div>
+      <div class="guide-note">${iconHtml("info", 15)}<span>表示される1日の必要量やAIの推定値は一般的な目安であり、医学的な助言ではありません。妊娠・授乳中の方、成長期のお子様、持病のある方は、医師や管理栄養士にご相談ください。18歳以上の方を対象としています。</span></div>
+    </div>
+  `);
 }
 
 // ---------------- 写真解析 ----------------
@@ -266,7 +519,7 @@ async function handleFileSelected(file) {
     state.capture.error = null;
     render();
   } catch (e) {
-    showToast("画像の読み込みに失敗しました");
+    showToast("写真を読み込めませんでした");
   }
 }
 
@@ -274,7 +527,7 @@ async function doAnalyze() {
   if (!state.capture.dataUrl) return;
   const cfg = getAiConfig(state.profile);
   if (!cfg.apiKey) {
-    state.capture.error = `APIキーが未設定です。「設定」タブで${cfg.provider.keyLabel}を登録するか、下の「無料の手動方式」をお使いください。`;
+    state.capture.error = `${cfg.provider.keyLabel}が未設定です。「設定」タブで登録するか、下の「APIキーを使わない方法」をお使いください。`;
     state.capture.showManual = true;
     render();
     return;
@@ -283,11 +536,10 @@ async function doAnalyze() {
   state.capture.error = null;
   render();
   try {
-    const result = await analyzeFoodPhoto({
+    state.capture.result = await analyzeFoodPhoto({
       dataUrl: state.capture.dataUrl,
       profile: state.profile,
     });
-    state.capture.result = result;
   } catch (e) {
     state.capture.error = e.message || "解析中にエラーが発生しました";
   } finally {
@@ -301,7 +553,7 @@ async function doCopyPrompt() {
     await navigator.clipboard.writeText(ANALYSIS_PROMPT);
     showToast("指示文をコピーしました");
   } catch (e) {
-    showToast("コピーに失敗しました。手動で選択してコピーしてください。");
+    showToast("コピーできませんでした。手動で選択してコピーしてください");
   }
 }
 
@@ -312,7 +564,7 @@ function doParseManual() {
     state.capture.result = parseManualAnalysisText(text);
     state.capture.error = null;
   } catch (e) {
-    state.capture.error = e.message || "貼り付けた内容の読み取りに失敗しました";
+    state.capture.error = e.message || "貼り付けた内容を読み取れませんでした";
   }
   render();
 }
@@ -348,253 +600,248 @@ function doDeleteLog(dateKey, id) {
   render();
 }
 
-// ---------------- 描画: オンボーディング / 設定フォーム ----------------
+// ---------------- 部品 ----------------
 
-function profileFormFields(p, prefix) {
-  p = p || { age: "", sex: "", height: "", weight: "", activity: "normal", goal: "maintain" };
+function selectRow(label, name, optionsHtml, id, attrs = "") {
+  return `
+    <div class="field-row">
+      <label class="field-label" for="${id}">${label}</label>
+      <select id="${id}" name="${name}" ${attrs}>${optionsHtml}</select>
+    </div>
+  `;
+}
+
+function numberRow(label, name, id, unit, value, attrs) {
+  return `
+    <div class="field-row">
+      <label class="field-label" for="${id}">${label}</label>
+      <input type="number" id="${id}" name="${name}" value="${value ?? ""}" ${attrs} inputmode="decimal">
+      <span class="field-unit">${unit}</span>
+    </div>
+  `;
+}
+
+// あなたのことを尋ねる欄
+function profileFieldsHtml(p, prefix) {
   const activityOptions = Object.entries(ACTIVITY_LEVELS)
-    .map(([k, v]) => `<option value="${k}" ${p.activity === k ? "selected" : ""}>${v.label} — ${v.desc}</option>`)
+    .map(([k, v]) => `<option value="${k}" ${p.activity === k ? "selected" : ""}>${v.label}</option>`)
     .join("");
   const goalOptions = Object.entries(GOALS)
-    .map(([k, v]) => `<option value="${k}" ${(p.goal || "maintain") === k ? "selected" : ""}>${v.label} — ${v.desc}</option>`)
+    .map(([k, v]) => `<option value="${k}" ${(p.goal || "maintain") === k ? "selected" : ""}>${v.label}</option>`)
     .join("");
+  const sexOptions = `
+    <option value="" ${!p.sex ? "selected" : ""}>選択</option>
+    <option value="male" ${p.sex === "male" ? "selected" : ""}>男性</option>
+    <option value="female" ${p.sex === "female" ? "selected" : ""}>女性</option>
+  `;
+
+  return `
+    <div class="group">
+      <div class="group-title">からだのこと</div>
+      <div class="list">
+        ${numberRow("年齢", "age", `${prefix}-age`, "歳", p.age, 'min="18" max="120" placeholder="30"')}
+        ${selectRow("性別", "sex", sexOptions, `${prefix}-sex`)}
+        ${numberRow("身長", "height", `${prefix}-height`, "cm", p.height, 'min="100" max="230" step="0.1" placeholder="165"')}
+        ${numberRow("体重", "weight", `${prefix}-weight`, "kg", p.weight, 'min="25" max="300" step="0.1" placeholder="58"')}
+      </div>
+      <div class="group-note">性別は必要栄養量の計算にのみ使います。</div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">生活と目標</div>
+      <div class="list">
+        ${selectRow("活動レベル", "activity", activityOptions, `${prefix}-activity`)}
+        ${selectRow("目標", "goal", goalOptions, `${prefix}-goal`)}
+      </div>
+      <div class="group-note">
+        活動レベル ——
+        ${Object.values(ACTIVITY_LEVELS).map((v) => `${v.label}: ${v.desc}`).join(" / ")}。
+        増量・減量を選ぶと、エネルギーとたんぱく質の目標量が調整されます。適切な量には個人差があるため、一般的な目安としてご利用ください。
+      </div>
+    </div>
+  `;
+}
+
+// 写真解析に使うAIを設定する欄(手順書へのボタンを含む)
+function aiFieldsHtml(p, prefix) {
   const currentProvider = p.provider || DEFAULT_PROVIDER;
   const providerOptions = Object.entries(PROVIDERS)
-    .map(([k, v]) => `<option value="${k}" ${currentProvider === k ? "selected" : ""}>${v.label}</option>`)
+    .map(([k, v]) => `<option value="${k}" ${currentProvider === k ? "selected" : ""}>${v.shortLabel}</option>`)
     .join("");
 
   return `
-    <div id="form-error" class="notice hidden"></div>
-    <div class="row">
-      <div class="col">
-        <label for="${prefix}-age">年齢</label>
-        <input type="number" id="${prefix}-age" name="age" min="18" max="120" placeholder="例: 30" value="${p.age ?? ""}" required>
+    <div class="group">
+      <div class="group-title">写真解析に使うAI</div>
+      <div class="list">
+        ${selectRow("サービス", "provider", providerOptions, `${prefix}-provider`, 'data-role="provider-select"')}
+
+        <div class="field-stack">
+          <div class="field-caption">
+            <span data-role="key-label">APIキー</span>
+            <button type="button" class="hint-btn" data-action="open-key-guide">
+              ${iconHtml("help", 14)} 取得のしかた
+            </button>
+          </div>
+          <div class="input-with-action">
+            <input type="password" id="f-apikey" name="apiKey" value="" autocomplete="off" spellcheck="false" aria-label="APIキー">
+            <button type="button" class="btn btn-gray btn-sm" data-action="toggle-key-visibility">表示</button>
+          </div>
+        </div>
+
+        <div class="field-stack hidden" data-role="baseurl-row">
+          <div class="field-caption"><span>APIのベースURL</span></div>
+          <input type="text" name="baseUrl" value="" autocomplete="off" spellcheck="false" placeholder="https://openrouter.ai/api/v1">
+        </div>
+
+        <div class="field-stack">
+          <div class="field-caption"><span>モデル</span></div>
+          <input type="text" name="model" id="${prefix}-model" value="" list="model-suggestions" autocomplete="off" spellcheck="false">
+          <datalist id="model-suggestions"></datalist>
+        </div>
+
+        <button type="button" class="row with-icon tappable" data-action="test-connection">
+          <span class="row-icon">${iconHtml("sparkle", 16)}</span>
+          <span class="row-main">
+            <span class="row-label">接続テスト</span>
+            <span class="row-sub" data-role="test-result">キーとモデル名が正しいか確かめます</span>
+          </span>
+        </button>
       </div>
-      <div class="col">
-        <label for="${prefix}-sex">性別(計算に使用)</label>
-        <select id="${prefix}-sex" name="sex" required>
-          <option value="">選択</option>
-          <option value="male" ${p.sex === "male" ? "selected" : ""}>男性</option>
-          <option value="female" ${p.sex === "female" ? "selected" : ""}>女性</option>
-        </select>
+      <div class="group-note" style="display:flex;justify-content:flex-end;padding-top:12px;">
+        <span class="chip" data-role="provider-cost"></span>
       </div>
-    </div>
-    <div class="row">
-      <div class="col">
-        <label for="${prefix}-height">身長(cm)</label>
-        <input type="number" id="${prefix}-height" name="height" min="100" max="230" step="0.1" placeholder="例: 165" value="${p.height ?? ""}" required>
-      </div>
-      <div class="col">
-        <label for="${prefix}-weight">体重(kg)</label>
-        <input type="number" id="${prefix}-weight" name="weight" min="25" max="300" step="0.1" placeholder="例: 58" value="${p.weight ?? ""}" required>
-      </div>
-    </div>
-    <label for="${prefix}-activity">日常の活動レベル</label>
-    <select id="${prefix}-activity" name="activity" required>${activityOptions}</select>
-
-    <label for="${prefix}-goal">目標</label>
-    <select id="${prefix}-goal" name="goal">${goalOptions}</select>
-    <p class="muted">増量・減量を選ぶと、カロリーとたんぱく質の目標量が調整されます。トレーニング内容や体質によって適切な量は変わるため、あくまで一般的な目安としてご利用ください。</p>
-
-    <div class="section-title">写真解析に使うAI(任意)</div>
-    <p class="muted">このアプリは専用のサーバーを持ちません。あなた自身のAIサービスのAPIキーを登録すると、ブラウザから直接そのAIに写真を送り、栄養素を自動で読み取れるようになります。キーはこの端末のブラウザ内にのみ保存され、開発者には送信されません。</p>
-    <p class="muted">登録しなくてもアプリは使えます(記録画面の「無料の手動方式」または手入力)。</p>
-
-    <label for="${prefix}-provider">使うAIサービス</label>
-    <select id="${prefix}-provider" name="provider" data-role="provider-select">${providerOptions}</select>
-    <p class="muted" data-role="provider-help"></p>
-
-    <label for="f-apikey" data-role="key-label">APIキー</label>
-    <div class="row">
-      <div class="col"><input type="password" id="f-apikey" name="apiKey" value="" autocomplete="off" spellcheck="false"></div>
-      <button type="button" class="btn btn-outline btn-sm" data-action="toggle-key-visibility" style="width:auto;">表示</button>
-    </div>
-    <p class="muted">キーの発行: <a data-role="key-link" href="#" target="_blank" rel="noopener noreferrer"></a></p>
-
-    <div data-role="baseurl-row" class="hidden">
-      <label for="${prefix}-baseurl">APIのベースURL</label>
-      <input type="text" id="${prefix}-baseurl" name="baseUrl" value="" autocomplete="off" spellcheck="false" placeholder="https://openrouter.ai/api/v1">
-      <p class="muted">末尾の <code>/chat/completions</code> は不要です。</p>
-    </div>
-
-    <label for="${prefix}-model">解析に使うモデル</label>
-    <input type="text" id="${prefix}-model" name="model" value="" list="model-suggestions" autocomplete="off" spellcheck="false">
-    <datalist id="model-suggestions"></datalist>
-    <p class="muted">候補から選ぶか、直接入力できます。各社のモデルは入れ替わりが速いため、うまく動かないときは最新のモデル名を入れてください。</p>
-
-    <div class="row" style="align-items:center; gap:10px;">
-      <button type="button" class="btn btn-outline btn-sm" data-action="test-connection" style="width:auto;">接続テスト</button>
-      <span class="muted" data-role="test-result"></span>
+      <div class="group-note" data-role="provider-help"></div>
     </div>
   `;
 }
 
-// 選ばれているAIサービスに合わせて、フォームの表示内容と値を切り替える
-function applyProviderUi(form) {
-  if (!form) return;
-  const sel = $("[data-role=provider-select]", form);
-  if (!sel) return;
-  const id = sel.value || DEFAULT_PROVIDER;
-  const meta = getProvider(id);
-  sel.dataset.current = id;
-
-  const help = $("[data-role=provider-help]", form);
-  if (help) help.textContent = meta.help;
-
-  const keyLabel = $("[data-role=key-label]", form);
-  if (keyLabel) keyLabel.textContent = meta.keyLabel;
-
-  const keyInput = $("#f-apikey", form);
-  if (keyInput) {
-    keyInput.placeholder = meta.keyPlaceholder;
-    keyInput.value = scratchValue("apiKeys", id, "");
-    keyInput.type = "password";
-  }
-  const toggleBtn = $("[data-action=toggle-key-visibility]", form);
-  if (toggleBtn) toggleBtn.textContent = "表示";
-
-  const keyLink = $("[data-role=key-link]", form);
-  if (keyLink) {
-    keyLink.href = meta.keyUrl;
-    keyLink.textContent = meta.keyUrlLabel;
-  }
-
-  const baseRow = $("[data-role=baseurl-row]", form);
-  if (baseRow) baseRow.classList.toggle("hidden", !meta.needsBaseUrl);
-  const baseInput = $("[name=baseUrl]", form);
-  if (baseInput) baseInput.value = scratchValue("baseUrls", id, meta.baseUrl || "");
-
-  const modelInput = $("[name=model]", form);
-  if (modelInput) {
-    modelInput.placeholder = meta.defaultModel || "モデル名を入力";
-    modelInput.value = scratchValue("models", id, meta.defaultModel || "");
-  }
-  const datalist = $("#model-suggestions", form);
-  if (datalist) {
-    datalist.innerHTML = meta.models.map((m) => `<option value="${escapeHtml(m)}"></option>`).join("");
-  }
-
-  const testResult = $("[data-role=test-result]", form);
-  if (testResult) testResult.textContent = "";
+function emptyProfile() {
+  return { age: "", sex: "", height: "", weight: "", activity: "normal", goal: "maintain" };
 }
 
-// AIサービスを切り替える前に、いま入力されている値を一時保存しておく
-function onProviderChange(sel) {
-  const form = sel.closest("form");
-  const prevId = sel.dataset.current;
-  if (form && prevId) {
-    const keyInput = $("#f-apikey", form);
-    const modelInput = $("[name=model]", form);
-    const baseInput = $("[name=baseUrl]", form);
-    if (keyInput) formScratch.apiKeys[prevId] = keyInput.value;
-    if (modelInput) formScratch.models[prevId] = modelInput.value;
-    if (baseInput) formScratch.baseUrls[prevId] = baseInput.value;
-  }
-  applyProviderUi(form);
-}
-
-// 入力されたキー・モデル名で実際にAPIを1回叩いて、つながるか確かめる
-async function doTestConnection(btn) {
-  const form = btn.closest("form");
-  if (!form) return;
-  const out = $("[data-role=test-result]", form);
-  const fd = new FormData(form);
-  const providerId = fd.get("provider") || DEFAULT_PROVIDER;
-  const meta = getProvider(providerId);
-  const probe = {
-    provider: providerId,
-    apiKeys: { [providerId]: (fd.get("apiKey") || "").trim() },
-    models: { [providerId]: (fd.get("model") || "").trim() || meta.defaultModel },
-    baseUrls: { [providerId]: (fd.get("baseUrl") || "").trim() || meta.baseUrl || "" },
-  };
-
-  btn.disabled = true;
-  if (out) out.textContent = "確認中…";
-  try {
-    await testAiConnection(probe);
-    if (out) out.textContent = "✓ 接続できました";
-  } catch (e) {
-    if (out) out.textContent = "✗ " + (e.message || "接続できませんでした");
-  } finally {
-    btn.disabled = false;
-  }
-}
+// ---------------- 描画: オンボーディング ----------------
 
 function renderOnboarding() {
+  const p = emptyProfile();
+  state.obStep = 0;
+
   return `
-    <div class="card" style="text-align:center; padding:28px 16px;">
-      <div style="width:56px;height:56px;border-radius:18px;background:var(--green-light);display:flex;align-items:center;justify-content:center;margin:0 auto 14px;color:var(--green-deep);">${iconHtml("meal", 26)}</div>
-      <h1>ようこそ</h1>
-      <p class="muted">まずはあなたに合った1日の必要栄養量を計算するために、いくつか教えてください。</p>
-    </div>
-    <form id="onboarding-form" class="card" novalidate>
-      ${profileFormFields(null, "ob")}
-      <button type="submit" class="btn btn-primary" style="margin-top:16px;">はじめる</button>
+    <form id="onboarding-form" novalidate>
+      <div class="ob-progress" aria-hidden="true"><i class="on"></i><i></i><i></i></div>
+
+      <section class="ob-step on" data-step="0">
+        <div class="ob-hero">
+          <div class="mark">${iconHtml("meal", 30)}</div>
+          <h1 class="large-title">食べたものを、<br>撮るだけ。</h1>
+          <p class="lede">写真からAIが栄養素を読み取り、あなたに必要な量と比べます。</p>
+        </div>
+        <div class="panel">
+          <div class="feature">
+            <span class="fi">${iconHtml("camera", 20)}</span>
+            <span><span class="ft">撮れば、記録される</span><span class="fd">料理の写真からエネルギーと栄養素を推定します。成分表示が写っていれば、その数値をそのまま読み取ります。</span></span>
+          </div>
+          <div class="feature">
+            <span class="fi">${iconHtml("sparkle", 20)}</span>
+            <span><span class="ft">あなたのAIにつなぐ</span><span class="fd">お使いのAIサービスのAPIキーを登録して使います。無料で使えるものも選べます。</span></span>
+          </div>
+          <div class="feature">
+            <span class="fi">${iconHtml("database", 20)}</span>
+            <span><span class="ft">記録は端末の中だけ</span><span class="fd">食事の記録は、この端末のブラウザにのみ保存されます。開発者には送信されません。</span></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="ob-step" data-step="1">
+        <div class="ob-hero" style="padding-bottom:24px;">
+          <h1 class="large-title">あなたのこと</h1>
+          <p class="lede">1日に必要な栄養量を計算します。</p>
+        </div>
+        ${profileFieldsHtml(p, "ob")}
+      </section>
+
+      <section class="ob-step" data-step="2">
+        <div class="ob-hero" style="padding-bottom:24px;">
+          <h1 class="large-title">AIにつなぐ</h1>
+          <p class="lede">写真を自動で読み取るための設定です。あとからでも設定できます。</p>
+        </div>
+        ${aiFieldsHtml(p, "ob")}
+        <div class="group-note" style="padding-top:0;">
+          設定しなくても、手入力や「APIキーを使わない方法」でアプリは使えます。
+        </div>
+      </section>
+
+      <div class="notice hidden" data-role="form-error"></div>
+      <div class="actions" data-role="ob-actions">${obFooterHtml(0)}</div>
     </form>
-    <p class="footer-note">本アプリの目安摂取量やAIによる栄養推定は一般的な参考値であり、医学的なアドバイスではありません。妊娠・授乳中の方や持病のある方は医師・管理栄養士にご相談ください。</p>
-  `;
-}
-
-function renderSettings() {
-  const p = state.profile;
-  if (state.editingProfile) {
-    return `
-      <div class="top-header"><h1>プロフィール編集</h1></div>
-      <form id="settings-form" class="card" novalidate>
-        ${profileFormFields(p, "st")}
-        <button type="submit" class="btn btn-primary" style="margin-top:16px;">保存する</button>
-      </form>
-    `;
-  }
-
-  const t = calcTargets(p);
-  const cfg = getAiConfig(p);
-  return `
-    <div class="top-header"><h1>設定</h1></div>
-    <div class="card">
-      <h2>プロフィール</h2>
-      <p class="muted">${p.age}歳・${p.sex === "male" ? "男性" : "女性"}・身長${p.height}cm・体重${p.weight}kg・活動レベル「${ACTIVITY_LEVELS[p.activity].label}」・目標「${(GOALS[p.goal] || GOALS.maintain).label}」</p>
-      <p class="muted">1日の目標エネルギー: <strong>${t.calories} kcal</strong>(たんぱく質 ${t.protein}g)</p>
-      <button class="btn btn-secondary" data-action="edit-profile">編集する</button>
-    </div>
-    <div class="card">
-      <h2>写真解析に使うAI</h2>
-      <p class="muted">サービス: <strong>${escapeHtml(cfg.provider.label)}</strong></p>
-      <p class="muted">${cfg.apiKey
-        ? `APIキーは設定済みです(末尾 ${escapeHtml(cfg.apiKey.slice(-4))})。`
-        : "APIキーが未設定です。写真の自動解析にはAPIキーが必要です。"}</p>
-      <p class="muted">使用モデル: ${escapeHtml(cfg.model || "(未設定)")}</p>
-      ${cfg.provider.needsBaseUrl ? `<p class="muted">接続先: ${escapeHtml(cfg.baseUrl || "(未設定)")}</p>` : ""}
-      <button class="btn btn-secondary" data-action="edit-profile">変更する</button>
-    </div>
-    <div class="card">
-      <h2>データ管理</h2>
-      <p class="muted">記録はすべてこの端末のブラウザ内(localStorage)に保存されています。開発者のサーバーには送信されません(写真解析のときだけ、写真とAPIキーがあなたが選んだAIサービスに送られます)。</p>
-      <button class="btn btn-danger" data-action="clear-logs">すべての食事記録を削除</button>
-    </div>
-    <p class="footer-note">栄養の目安値・AIによる推定値は一般的な参考情報です。医療・栄養に関する専門的な判断が必要な場合は、医師や管理栄養士にご相談ください。</p>
+    <p class="disclaimer">1日の必要量やAIによる推定値は一般的な目安であり、医学的なアドバイスではありません。妊娠・授乳中の方や持病のある方は医師・管理栄養士にご相談ください。</p>
   `;
 }
 
 // ---------------- 描画: ホーム ----------------
 
-function nutrientBar(key, consumed, target) {
+function ringHtml(consumed, target) {
+  const pct = target > 0 ? (consumed / target) * 100 : 0;
+  const shown = Math.max(0, Math.min(100, pct));
+  const over = consumed > target;
+  const R = 84;
+  const C = 2 * Math.PI * R;
+  const offset = C * (1 - shown / 100);
+  return `
+    <div class="ring ${over ? "over" : ""}">
+      <svg viewBox="0 0 196 196" aria-hidden="true">
+        <circle class="track" cx="98" cy="98" r="${R}" fill="none" stroke-width="14"/>
+        <circle class="fill" cx="98" cy="98" r="${R}" fill="none" stroke-width="14"
+                stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${offset.toFixed(1)}"/>
+      </svg>
+      <div class="ring-center">
+        <span class="value">${Math.round(consumed)}</span>
+        <span class="unit">KCAL</span>
+      </div>
+    </div>
+  `;
+}
+
+function nutrientRow(key, consumed, target) {
   const meta = NUTRIENT_META[key];
   const pct = target > 0 ? Math.min(100, Math.round((consumed / target) * 100)) : 0;
   const over = consumed > target;
   const remain = Math.max(0, Math.round((target - consumed) * 10) / 10);
   const remainLabel = meta.isLimit
-    ? (over ? `${Math.round((consumed - target) * 10) / 10}${meta.unit} 超過` : `あと${remain}${meta.unit}`)
-    : (over ? "達成" : `あと${remain}${meta.unit}`);
+    ? (over ? `${Math.round((consumed - target) * 10) / 10}${meta.unit} 超過` : `あと ${remain}${meta.unit}`)
+    : (over ? "達成" : `あと ${remain}${meta.unit}`);
   return `
-    <div class="nutrient-row">
+    <div class="nutrient">
       <div class="nutrient-head">
-        <span class="label">${nutrientIconHtml(key)} ${meta.label}</span>
-        <span class="val">${Math.round(consumed * 10) / 10}/${target}${meta.unit} ・ ${remainLabel}</span>
+        <span class="nutrient-name">${nutrientIconHtml(key)} ${meta.label}</span>
+        <span class="nutrient-val">${Math.round(consumed * 10) / 10} / ${target}${meta.unit} ・ ${remainLabel}</span>
       </div>
-      <div class="bar ${over ? "over" : ""}"><div style="width:${pct}%"></div></div>
+      <div class="bar ${over ? "over" : ""}"><span style="width:${pct}%"></span></div>
     </div>
   `;
+}
+
+function mealRowHtml(entry, dateKey) {
+  const thumb = entry.thumb
+    ? `<img class="thumb" src="${entry.thumb}" alt="">`
+    : `<span class="thumb">${iconHtml("meal", 18)}</span>`;
+  return `
+    <div class="row with-thumb">
+      ${thumb}
+      <span class="row-main">
+        <span class="row-label" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(entry.name)}</span>
+        <span class="row-sub">${entry.time} ・ ${Math.round(entry.nutrients.calories)} kcal</span>
+      </span>
+      <button class="icon-btn" data-action="delete-log" data-date="${dateKey}" data-id="${entry.id}" aria-label="この記録を削除">${iconHtml("close", 13)}</button>
+    </div>
+  `;
+}
+
+function greeting() {
+  const h = new Date().getHours();
+  if (h < 5) return "こんばんは";
+  if (h < 11) return "おはようございます";
+  if (h < 18) return "こんにちは";
+  return "こんばんは";
 }
 
 function renderHome() {
@@ -602,153 +849,195 @@ function renderHome() {
   const targets = calcTargets(p);
   const logs = Storage.getLogsForDate(todayKey());
   const consumed = sumNutrients(logs);
-  const kcalPct = Math.round((consumed.calories / targets.calories) * 100);
   const kcalOver = consumed.calories > targets.calories;
-
+  const remainKcal = Math.max(0, targets.calories - Math.round(consumed.calories));
   const advice = buildAdvice(consumed, targets);
 
+  const caption = kcalOver
+    ? `目標を <strong>${Math.round(consumed.calories) - targets.calories}</strong> kcal 超えています`
+    : `目標 <strong>${targets.calories}</strong> kcal まで、あと <strong>${remainKcal}</strong> kcal`;
+
   const mealsHtml = logs.length
-    ? logs.map((e) => `
-        <div class="meal-item">
-          ${e.thumb ? `<img class="meal-thumb" src="${e.thumb}" alt="">` : `<div class="meal-thumb">${iconHtml("meal", 18)}</div>`}
-          <div class="meal-info">
-            <div class="name">${escapeHtml(e.name)}</div>
-            <div class="meta">${e.time} ・ ${Math.round(e.nutrients.calories)} kcal</div>
-          </div>
-          <button class="del" data-action="delete-log" data-date="${todayKey()}" data-id="${e.id}">${iconHtml("close")}</button>
-        </div>
-      `).join("")
-    : `<p class="muted">まだ今日の記録はありません。「記録」タブから食事の写真を撮ってみましょう。</p>`;
+    ? logs.map((e) => mealRowHtml(e, todayKey())).join("")
+    : `<div class="empty">${iconHtml("meal", 30)}<div class="title">まだ記録がありません</div><div class="body">「記録」タブから、食事の写真を撮ってみましょう。</div></div>`;
 
   const detailHtml = state.showDetail
-    ? SECONDARY_NUTRIENTS.map((k) => nutrientBar(k, consumed[k], targets[k])).join("")
+    ? SECONDARY_NUTRIENTS.map((k) => nutrientRow(k, consumed[k], targets[k])).join("")
     : "";
 
   return `
-    <div class="top-header">
-      <h1>今日の栄養</h1>
-      <span class="date">${formatDateLabel(todayKey())}</span>
-    </div>
-
-    <div class="card">
-      <div class="calorie-hero">
-        <div class="num ${kcalOver ? "over" : ""}">${Math.round(consumed.calories)}</div>
-        <div class="label">/ ${targets.calories} kcal (${kcalPct}%)</div>
+    <div class="nav-bar">
+      <div>
+        <div class="footnote" style="margin-bottom:2px;">${greeting()}</div>
+        <h1 class="large-title">今日</h1>
       </div>
-      <div class="bar ${kcalOver ? "over" : ""}" style="margin-top:8px;"><div style="width:${Math.min(100, kcalPct)}%"></div></div>
+      <span class="sub">${formatDateLabel(todayKey())}</span>
     </div>
 
-    <div class="card">
-      <h2>主要な栄養素</h2>
-      ${PRIMARY_NUTRIENTS.filter((k) => k !== "calories").map((k) => nutrientBar(k, consumed[k], targets[k])).join("")}
-      <button class="link-btn" data-action="toggle-detail">${state.showDetail ? "▲ その他の栄養素を隠す" : "▼ その他の栄養素も見る"}</button>
-      ${detailHtml}
+    <div class="panel" style="padding:26px 20px 24px;">
+      <div class="ring-wrap">
+        ${ringHtml(consumed.calories, targets.calories)}
+        <div class="ring-caption">${caption}</div>
+      </div>
     </div>
 
-    <div class="card">
-      <h2>アドバイス</h2>
-      ${advice.map((a) => `<div class="advice-item ${a.warn ? "warn" : ""}"><span class="ic-chip">${nutrientIconHtml(a.iconKey)}</span><span>${a.text}</span></div>`).join("")}
+    <div class="group" style="margin-top:28px;">
+      <div class="group-title">主要な栄養素</div>
+      <div class="list">
+        ${PRIMARY_NUTRIENTS.filter((k) => k !== "calories").map((k) => nutrientRow(k, consumed[k], targets[k])).join("")}
+        ${detailHtml}
+        <button type="button" class="row tappable" data-action="toggle-detail">
+          <span class="row-main"><span class="row-label" style="color:var(--accent);font-size:15px;">${state.showDetail ? "その他の栄養素を隠す" : "その他の栄養素も見る"}</span></span>
+          <span class="row-chevron" style="transform:rotate(${state.showDetail ? "180deg" : "0deg"});">${iconHtml("chevronDown", 14)}</span>
+        </button>
+      </div>
     </div>
 
-    <div class="card">
-      <h2>今日の記録</h2>
-      ${mealsHtml}
+    <div class="group">
+      <div class="group-title">アドバイス</div>
+      <div class="list">
+        ${advice.map((a) => `
+          <div class="row with-icon">
+            <span class="row-icon ${a.warn ? "warn" : ""}">${nutrientIconHtml(a.iconKey)}</span>
+            <span class="row-main"><span class="row-label" style="font-size:15px;line-height:1.5;">${escapeHtml(a.text)}</span></span>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">今日の記録</div>
+      <div class="list">${mealsHtml}</div>
     </div>
   `;
 }
 
-// ---------------- 描画: 撮影・解析 ----------------
+// ---------------- 描画: 記録(撮影・解析) ----------------
+
+function renderResultForm(r) {
+  const itemsText = r.items.length
+    ? r.items.map((it) => `${it.name}${it.amount ? `(${it.amount})` : ""}`).join("・")
+    : "";
+  const sourceBadge = r.source === "label"
+    ? `<span class="badge accent">${iconHtml("label", 13)} 成分表示を読み取りました</span>`
+    : `<span class="badge ${r.confidence === "low" ? "warn" : ""}">${iconHtml("sparkle", 13)} 推定の確度: ${r.confidence === "high" ? "高い" : r.confidence === "low" ? "低め" : "普通"}</span>`;
+
+  return `
+    <form id="result-form">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;">
+        ${sourceBadge}
+        <button type="button" class="btn btn-plain btn-sm" data-action="retake">撮り直す</button>
+      </div>
+
+      ${r.source === "label" ? `<p class="footnote" style="margin-bottom:14px;">写真の中の成分表示の数値を使いました。表示のない栄養素はおおよその推定値です。</p>` : ""}
+      ${itemsText ? `<p class="muted" style="margin-bottom:14px;">${escapeHtml(itemsText)}</p>` : ""}
+      ${r.note ? `<p class="footnote" style="margin-bottom:14px;">${escapeHtml(r.note)}</p>` : ""}
+
+      <div class="group">
+        <div class="group-title">この食事</div>
+        <div class="list">
+          <div class="field-stack">
+            <div class="field-caption"><span>名前</span></div>
+            <input type="text" id="mealName" name="mealName" value="${escapeHtml(r.items[0]?.name || "食事")}">
+          </div>
+          <div class="field-stack">
+            <div class="field-caption"><span>メモ(任意)</span></div>
+            <input type="text" id="memo" name="memo" placeholder="外食・自炊 など">
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-title">栄養素</div>
+        <div class="list">
+          ${Object.keys(NUTRIENT_META).map((k) => `
+            <div class="field-row">
+              <label class="field-label" for="rf-${k}" style="display:flex;align-items:center;gap:9px;min-width:130px;font-size:15px;">
+                ${nutrientIconHtml(k)} ${NUTRIENT_META[k].label}
+              </label>
+              <input type="number" step="0.1" id="rf-${k}" name="${k}" value="${r.nutrients[k]}" inputmode="decimal">
+              <span class="field-unit">${NUTRIENT_META[k].unit}</span>
+            </div>
+          `).join("")}
+        </div>
+        <div class="group-note">数値は必要に応じて直せます。</div>
+      </div>
+
+      <div class="actions">
+        <button type="button" class="btn btn-primary" data-action="add-log">${iconHtml("plus", 16)} 記録に追加</button>
+      </div>
+    </form>
+  `;
+}
+
+function renderManualPanel() {
+  const open = state.capture.showManual;
+  return `
+    <div class="group" style="margin-top:20px;">
+      <div class="list">
+        <button type="button" class="row with-icon tappable" data-action="toggle-manual">
+          <span class="row-icon neutral">${iconHtml("key", 16)}</span>
+          <span class="row-main">
+            <span class="row-label" style="font-size:16px;">APIキーを使わない方法</span>
+            <span class="row-sub">手持ちのAIチャットに貼って、結果を戻します</span>
+          </span>
+          <span class="row-chevron" style="transform:rotate(${open ? "180deg" : "0deg"});">${iconHtml("chevronDown", 14)}</span>
+        </button>
+        ${open ? `
+          <div class="field-stack">
+            <p class="footnote" style="margin-bottom:12px;">① 解析用の指示文をコピーします。</p>
+            <button type="button" class="btn btn-gray btn-sm" data-action="copy-prompt">指示文をコピー</button>
+            <p class="footnote" style="margin:16px 0 0;">② この写真とコピーした指示文を、お使いのAIチャット(ChatGPT・Claude・Gemini など)に貼り付けて送信します。無料プランのままで構いません。</p>
+            <p class="footnote" style="margin:8px 0 0;">③ 返ってきたJSON形式の回答を、下に貼り付けてください。</p>
+          </div>
+          <div class="field-stack">
+            <div class="field-caption"><span>回答を貼り付け</span></div>
+            <textarea id="manual-json-input" rows="6" placeholder='{ "items": [...], "nutrients": {...} }'></textarea>
+            <button type="button" class="btn btn-tinted btn-sm" style="margin-top:12px;" data-action="parse-manual">貼り付けた内容を読み込む</button>
+          </div>
+        ` : ""}
+      </div>
+    </div>
+  `;
+}
 
 function renderCapture() {
   const c = state.capture;
 
-  let previewInner = `<div class="placeholder">${iconHtml("camera", 40)}写真を撮る、選ぶ、または貼り付け(⌘V)</div>`;
-  if (c.dataUrl) previewInner = `<img src="${c.dataUrl}" alt="撮影した写真">`;
+  const preview = c.dataUrl
+    ? `<img src="${c.dataUrl}" alt="撮影した写真">`
+    : `<div class="placeholder">${iconHtml("camera", 34)}写真を撮る、選ぶ、<br>または貼り付け(Ctrl+V)</div>`;
 
-  let actionArea = "";
+  let body = "";
   if (!c.dataUrl) {
-    actionArea = `
-      <div class="stack">
-        <button class="btn btn-primary" data-action="open-camera">${iconHtml("camera", 17)} カメラで撮影</button>
-        <button class="btn btn-outline" data-action="open-library">${iconHtml("gallery", 17)} ライブラリから選ぶ</button>
+    body = `
+      <div class="actions" style="margin-top:0;">
+        <button type="button" class="btn btn-primary" data-action="open-camera">${iconHtml("camera", 17)} カメラで撮影</button>
+        <button type="button" class="btn btn-gray" data-action="open-library">${iconHtml("gallery", 17)} ライブラリから選ぶ</button>
       </div>
-      <p class="muted" style="text-align:center; margin-top:12px;">スマホやカメラで撮った写真は、コピーしてこの画面で<strong>⌘V(Ctrl+V)</strong>で貼り付けもできます。</p>
+      <p class="footnote" style="text-align:center;margin-top:18px;">スマホで撮った写真をコピーして、この画面に貼り付けることもできます。</p>
       <input type="file" id="file-camera" accept="image/*" capture="environment">
       <input type="file" id="file-library" accept="image/*">
     `;
   } else if (c.analyzing) {
-    actionArea = `
-      <div class="row" style="align-items:center; justify-content:center; padding:14px 0;">
-        <div class="spinner"></div>
-        <span style="margin-left:10px;">AIが解析中です…</span>
-      </div>
-    `;
+    body = `<div class="analyzing"><div class="spinner"></div><span>AIが解析しています…</span></div>`;
   } else if (c.result) {
-    const r = c.result;
-    const itemsHtml = r.items.length
-      ? `<p class="muted">${r.items.map((it) => `${escapeHtml(it.name)}(${escapeHtml(it.amount || "")})`).join("・")}</p>`
-      : "";
-    const sourceBadge = r.source === "label"
-      ? `<span class="badge">${iconHtml("label", 13)} 成分表示を読み取りました</span>`
-      : (r.confidence === "low"
-          ? `<span class="badge warn">推定の確度: 低め</span>`
-          : `<span class="badge">推定の確度: ${r.confidence === "high" ? "高い" : "普通"}</span>`);
-
-    actionArea = `
-      <form id="result-form" class="stack">
-        <div class="row" style="align-items:center; justify-content:space-between;">
-          ${sourceBadge}
-          <button type="button" class="link-btn" data-action="retake">撮り直す</button>
-        </div>
-        ${r.source === "label" ? `<p class="muted">写真の中の成分表示(パッケージ・アプリ画面など)の数値を使いました。表示のない栄養素はおおよその推定値です。</p>` : ""}
-        ${itemsHtml}
-        ${r.note ? `<p class="muted">${escapeHtml(r.note)}</p>` : ""}
-
-        <label for="mealName">食事の名前</label>
-        <input type="text" id="mealName" name="mealName" value="${escapeHtml(r.items[0]?.name || "食事")}">
-
-        <div class="section-title">栄養素(必要に応じて修正できます)</div>
-        ${Object.keys(NUTRIENT_META).map((k) => `
-          <div class="result-item">
-            <label class="label">${nutrientIconHtml(k)} ${NUTRIENT_META[k].label}</label>
-            <input type="number" step="0.1" name="${k}" value="${r.nutrients[k]}"> <span class="muted">${NUTRIENT_META[k].unit}</span>
-          </div>
-        `).join("")}
-
-        <label for="memo">メモ(任意)</label>
-        <input type="text" id="memo" name="memo" placeholder="例: 外食・自炊など">
-
-        <button type="button" class="btn btn-primary" data-action="add-log" style="margin-top:6px;">記録に追加</button>
-      </form>
-    `;
+    body = renderResultForm(c.result);
   } else {
-    const manualOpen = c.showManual;
-    actionArea = `
-      ${c.error ? `<div class="notice">${escapeHtml(c.error)}</div>` : ""}
-      <div class="stack">
-        <button class="btn btn-primary" data-action="analyze">この写真を解析する</button>
-        <button class="btn btn-outline" data-action="retake">撮り直す</button>
+    body = `
+      ${c.error ? `<div class="notice">${iconHtml("info", 16)}<span>${escapeHtml(c.error)}</span></div>` : ""}
+      <div class="actions" style="margin-top:0;">
+        <button type="button" class="btn btn-primary" data-action="analyze">${iconHtml("sparkle", 16)} この写真を解析する</button>
+        <button type="button" class="btn btn-plain" data-action="retake">撮り直す</button>
       </div>
-      <button class="link-btn" data-action="toggle-manual" style="margin-top:14px;">${manualOpen ? "▲ 無料の手動方式を隠す" : "▼ 無料の手動方式を使う(APIキー不要)"}</button>
-      ${manualOpen ? `
-        <div class="card" style="margin-top:10px;">
-          <h2>無料で解析する(APIキー不要)</h2>
-          <p class="muted">① 下のボタンで解析用の指示文をコピーします。</p>
-          <button type="button" class="btn btn-outline btn-sm" data-action="copy-prompt" style="width:auto;">指示文をコピー</button>
-          <p class="muted" style="margin-top:12px;">② この写真とコピーした指示文を、お使いのAIチャット(ChatGPT・Claude・Gemini など)に貼り付けて送信してください。無料プランのままで構いません。</p>
-          <p class="muted">③ 返ってきたJSON形式の回答をコピーして、下に貼り付けてください。</p>
-          <label for="manual-json-input">回答を貼り付け</label>
-          <textarea id="manual-json-input" rows="6" placeholder='{ "items": [...], "nutrients": {...}, ... }' style="width:100%; padding:11px 12px; border:1px solid var(--border); border-radius:12px; font-family:inherit; font-size:14px; resize:vertical;"></textarea>
-          <button type="button" class="btn btn-primary" data-action="parse-manual" style="margin-top:10px;">貼り付けた内容を読み込む</button>
-        </div>
-      ` : ""}
+      ${renderManualPanel()}
     `;
   }
 
   return `
-    <div class="top-header"><h1>食事を記録</h1></div>
-    <div class="photo-preview" tabindex="0">${previewInner}</div>
-    ${actionArea}
+    <div class="nav-bar"><h1 class="large-title">記録</h1></div>
+    <div class="photo-frame">${preview}</div>
+    ${body}
   `;
 }
 
@@ -760,8 +1049,10 @@ function renderHistory() {
 
   if (dates.length === 0) {
     return `
-      <div class="top-header"><h1>履歴</h1></div>
-      <div class="card"><p class="muted">まだ記録がありません。</p></div>
+      <div class="nav-bar"><h1 class="large-title">履歴</h1></div>
+      <div class="list">
+        <div class="empty">${iconHtml("calendar", 30)}<div class="title">まだ記録がありません</div><div class="body">食事を記録すると、ここに日ごとにまとまります。</div></div>
+      </div>
     `;
   }
 
@@ -771,29 +1062,125 @@ function renderHistory() {
     const entries = all[d];
     const sum = sumNutrients(entries);
     const open = state.historyOpenDate === d;
-    const mealsHtml = entries.map((e) => `
-      <div class="meal-item">
-        ${e.thumb ? `<img class="meal-thumb" src="${e.thumb}" alt="">` : `<div class="meal-thumb"></div>`}
-        <div class="meal-info">
-          <div class="name">${escapeHtml(e.name)}</div>
-          <div class="meta">${e.time} ・ ${Math.round(e.nutrients.calories)} kcal</div>
-        </div>
-        <button class="del" data-action="delete-log" data-date="${d}" data-id="${e.id}">${iconHtml("close")}</button>
-      </div>
-    `).join("");
+    const pct = Math.min(100, Math.round((sum.calories / targets.calories) * 100));
+    const over = sum.calories > targets.calories;
 
     return `
-      <div class="history-day" data-action="toggle-history-day" data-date="${d}">
-        <span class="d">${formatDateLabel(d)}</span>
-        <span class="kcal">${Math.round(sum.calories)} / ${targets.calories} kcal ${open ? "▲" : "▼"}</span>
+      <button type="button" class="row tappable" data-action="toggle-history-day" data-date="${d}">
+        <span class="row-main">
+          <span class="row-label">${formatDateLabel(d)}</span>
+          <span class="row-sub">${entries.length}件の記録</span>
+        </span>
+        <span class="row-value" style="font-size:15px;">${Math.round(sum.calories)} / ${targets.calories}</span>
+        <span class="row-chevron" style="transform:rotate(${open ? "180deg" : "0deg"});">${iconHtml("chevronDown", 14)}</span>
+      </button>
+      <div class="nutrient no-sep" style="padding-top:0;">
+        <div class="bar ${over ? "over" : ""}"><span style="width:${pct}%"></span></div>
       </div>
-      ${open ? `<div>${mealsHtml}</div>` : ""}
+      ${open ? entries.map((e) => mealRowHtml(e, d)).join("") : ""}
     `;
   }).join("");
 
   return `
-    <div class="top-header"><h1>履歴</h1></div>
-    <div class="card">${daysHtml}</div>
+    <div class="nav-bar"><h1 class="large-title">履歴</h1></div>
+    <div class="list">${daysHtml}</div>
+  `;
+}
+
+// ---------------- 描画: 設定 ----------------
+
+function renderSettings() {
+  const p = state.profile;
+
+  if (state.editingProfile) {
+    return `
+      <div class="nav-compact">
+        <button type="button" class="btn btn-plain btn-sm" data-action="cancel-edit">${iconHtml("chevronLeft", 14)} 設定</button>
+      </div>
+      <div class="nav-bar" style="padding-top:0;"><h1 class="large-title">編集</h1></div>
+      <form id="settings-form" novalidate>
+        ${profileFieldsHtml(p, "st")}
+        ${aiFieldsHtml(p, "st")}
+        <div class="notice hidden" data-role="form-error"></div>
+        <div class="actions">
+          <button type="submit" class="btn btn-primary">保存する</button>
+          <button type="button" class="btn btn-plain" data-action="cancel-edit">キャンセル</button>
+        </div>
+      </form>
+    `;
+  }
+
+  const t = calcTargets(p);
+  const cfg = getAiConfig(p);
+  const guide = getProviderGuide(cfg.providerId);
+
+  return `
+    <div class="nav-bar"><h1 class="large-title">設定</h1></div>
+
+    <div class="group">
+      <div class="group-title">あなたのこと</div>
+      <div class="list">
+        <button type="button" class="row with-icon tappable" data-action="edit-profile">
+          <span class="row-icon">${iconHtml("person", 16)}</span>
+          <span class="row-main">
+            <span class="row-label">プロフィール</span>
+            <span class="row-sub">${p.age}歳・${p.sex === "male" ? "男性" : "女性"}・${p.height}cm・${p.weight}kg</span>
+          </span>
+          <span class="row-chevron">${iconHtml("chevron", 14)}</span>
+        </button>
+        <div class="row">
+          <span class="row-main"><span class="row-label" style="font-size:15px;">1日の目標</span></span>
+          <span class="row-value" style="font-size:15px;">${t.calories} kcal ・ P ${t.protein}g</span>
+        </div>
+      </div>
+      <div class="group-note">活動レベル「${ACTIVITY_LEVELS[p.activity].label}」・目標「${(GOALS[p.goal] || GOALS.maintain).label}」</div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">写真解析に使うAI</div>
+      <div class="list">
+        <button type="button" class="row with-icon tappable" data-action="edit-profile">
+          <span class="row-icon">${iconHtml("sparkle", 16)}</span>
+          <span class="row-main">
+            <span class="row-label">${escapeHtml(cfg.provider.shortLabel)}</span>
+            <span class="row-sub">${cfg.apiKey
+              ? `APIキー設定済み(末尾 ${escapeHtml(cfg.apiKey.slice(-4))})・${escapeHtml(cfg.model || "モデル未設定")}`
+              : "APIキーが未設定です"}</span>
+          </span>
+          <span class="row-chevron">${iconHtml("chevron", 14)}</span>
+        </button>
+        <button type="button" class="row with-icon tappable" data-action="open-key-guide">
+          <span class="row-icon neutral">${iconHtml("help", 16)}</span>
+          <span class="row-main">
+            <span class="row-label">APIキーの取得のしかた</span>
+            <span class="row-sub">${escapeHtml(guide.cost.text)}</span>
+          </span>
+          <span class="row-chevron">${iconHtml("chevron", 14)}</span>
+        </button>
+      </div>
+      ${cfg.provider.needsBaseUrl ? `<div class="group-note">接続先: ${escapeHtml(cfg.baseUrl || "(未設定)")}</div>` : ""}
+    </div>
+
+    <div class="group">
+      <div class="group-title">データ</div>
+      <div class="list">
+        <button type="button" class="row with-icon tappable" data-action="open-about">
+          <span class="row-icon neutral">${iconHtml("shield", 16)}</span>
+          <span class="row-main">
+            <span class="row-label">データの扱いについて</span>
+            <span class="row-sub">保存先・送信先・免責</span>
+          </span>
+          <span class="row-chevron">${iconHtml("chevron", 14)}</span>
+        </button>
+        <button type="button" class="row with-icon tappable" data-action="clear-logs">
+          <span class="row-icon" style="background:rgba(255,59,48,.12);color:var(--danger);">${iconHtml("trash", 16)}</span>
+          <span class="row-main"><span class="row-label" style="color:var(--danger);">すべての食事記録を削除</span></span>
+        </button>
+      </div>
+      <div class="group-note">記録はこの端末のブラウザ内にのみ保存されています。</div>
+    </div>
+
+    <p class="disclaimer">栄養の目安値・AIによる推定値は一般的な参考情報です。医療・栄養に関する専門的な判断が必要な場合は、医師や管理栄養士にご相談ください。</p>
   `;
 }
 

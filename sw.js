@@ -1,7 +1,7 @@
 // 最小限のサービスワーカー: アプリの見た目(シェル)をキャッシュしてオフラインでも開けるようにする。
 // 栄養解析にはネット接続と、利用者自身のAI APIキーが必要です。
 
-const CACHE_NAME = "nutriapp-shell-v4";
+const CACHE_NAME = "nutriapp-shell-v5";
 const ASSETS = [
   "./",
   "./index.html",

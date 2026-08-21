@@ -69,6 +69,7 @@ class ApiParseError extends Error {}
 const PROVIDERS = {
   gemini: {
     label: "Google Gemini(無料枠あり・おすすめ)",
+    shortLabel: "Google Gemini",
     keyLabel: "Google AI Studio APIキー",
     keyPlaceholder: "AIza...",
     keyUrl: "https://aistudio.google.com/apikey",
@@ -87,6 +88,7 @@ const PROVIDERS = {
   },
   anthropic: {
     label: "Claude(Anthropic)",
+    shortLabel: "Claude",
     keyLabel: "Anthropic APIキー",
     keyPlaceholder: "sk-ant-...",
     keyUrl: "https://console.anthropic.com/settings/keys",
@@ -100,6 +102,7 @@ const PROVIDERS = {
   },
   openai: {
     label: "OpenAI(ChatGPT)",
+    shortLabel: "OpenAI",
     keyLabel: "OpenAI APIキー",
     keyPlaceholder: "sk-...",
     keyUrl: "https://platform.openai.com/api-keys",
@@ -114,6 +117,7 @@ const PROVIDERS = {
   },
   custom: {
     label: "その他(OpenAI互換のサービス)",
+    shortLabel: "OpenAI互換のサービス",
     keyLabel: "APIキー",
     keyPlaceholder: "sk-or-v1-... など",
     keyUrl: "https://openrouter.ai/keys",
@@ -132,6 +136,85 @@ const DEFAULT_PROVIDER = "gemini";
 
 function getProvider(id) {
   return PROVIDERS[id] || PROVIDERS[DEFAULT_PROVIDER];
+}
+
+// ---------------------------------------------------------------
+// APIキーの取得手順(設定画面の「取得のしかた」から開く手順書)
+//
+// APIキーの取得は、初めての人がいちばんつまずくところなので、
+// 画面を離れずに読める手順書をアプリの中に持たせている。
+// ---------------------------------------------------------------
+
+const PROVIDER_GUIDES = {
+  gemini: {
+    lead: "Googleアカウントがあれば、3分ほどで取得できます。クレジットカードの登録は必要ありません。",
+    cost: { tone: "good", text: "無料。カード登録不要" },
+    steps: [
+      { text: "下のボタンから Google AI Studio のAPIキー画面を開きます。", link: { url: "https://aistudio.google.com/apikey", label: "APIキー画面を開く" } },
+      { text: "Googleアカウントでログインします。普段お使いのアカウントで構いません。" },
+      { text: "初回は利用規約の同意画面が出ます。内容を確認して同意してください。" },
+      { text: "「APIキーを作成」(英語表示なら Create API key)を押します。" },
+      { text: "プロジェクトを選ぶ画面が出たら、「新しいプロジェクトでAPIキーを作成」でかまいません。" },
+      { text: "AIza で始まる長い文字列が表示されます。コピーボタンでコピーしてください。" },
+      { text: "この画面に戻り、「APIキー」欄に貼り付けて「接続テスト」を押します。「接続できました」と出れば完了です。" },
+    ],
+    notes: [
+      { tone: "warn", text: "「課金を有効にする / Set up Billing」は押さないでください。有効にするとそのプロジェクトの無料枠が無くなり、以後はすべて従量課金になります。" },
+      { tone: "info", text: "無料枠には1日あたりの回数制限があります(Flash系でおおむね1日1,500回程度)。食事の記録に使う分には十分です。" },
+      { tone: "info", text: "無料枠では、送信した内容がGoogleのサービス改善に使われる場合があります。食事の写真を送るのが気になる場合は、記録画面の「APIキーを使わない方法」をお使いください。" },
+      { tone: "warn", text: "APIキーは他人に見せないでください。万一漏れたときは、同じ画面からそのキーを削除すれば無効にできます。" },
+    ],
+  },
+  anthropic: {
+    lead: "Claudeを提供するAnthropicのAPIです。無料枠は無く、先にクレジットを購入する必要があります。",
+    cost: { tone: "paid", text: "有料。事前にクレジット購入が必要" },
+    steps: [
+      { text: "Anthropicのコンソールにアクセスし、アカウントを作成またはログインします。", link: { url: "https://console.anthropic.com/settings/keys", label: "APIキー画面を開く" } },
+      { text: "「Create Key」でキーを作成します。" },
+      { text: "sk-ant- で始まる文字列が表示されるのでコピーします。この画面を閉じると二度と表示されません。" },
+      { text: "「Billing」からクレジットを購入します。これをしないとキーがあっても解析できません。" },
+      { text: "この画面に戻り、「APIキー」欄に貼り付けて「接続テスト」を押します。" },
+    ],
+    notes: [
+      { tone: "info", text: "写真1枚あたりの費用はごく小さい程度ですが、使った分だけ課金されます。" },
+      { tone: "warn", text: "APIキーは他人に見せないでください。漏れたときは同じ画面から失効させてください。" },
+    ],
+  },
+  openai: {
+    lead: "ChatGPTを提供するOpenAIのAPIです。ChatGPTの有料プランとは別に、API用の支払い登録が必要です。",
+    cost: { tone: "paid", text: "有料。事前にクレジット購入が必要" },
+    steps: [
+      { text: "OpenAIのプラットフォームにアクセスし、ログインします。", link: { url: "https://platform.openai.com/api-keys", label: "APIキー画面を開く" } },
+      { text: "「Create new secret key」でキーを作成します。" },
+      { text: "sk- で始まる文字列をコピーします。この画面を閉じると二度と表示されません。" },
+      { text: "「Billing」から支払い方法を登録し、クレジットを購入します。" },
+      { text: "この画面に戻り、「APIキー」欄に貼り付け、画像を読めるモデル名を入れて「接続テスト」を押します。" },
+    ],
+    notes: [
+      { tone: "warn", text: "ChatGPT Plus の月額とAPIの料金は別会計です。Plusに入っていてもAPIは使えません。" },
+      { tone: "warn", text: "APIキーは他人に見せないでください。漏れたときは同じ画面から失効させてください。" },
+    ],
+  },
+  custom: {
+    lead: "OpenAI互換のAPIを持つサービスなら、どれでも接続できます。ここでは無料モデルのある OpenRouter を例に説明します。",
+    cost: { tone: "good", text: "サービス次第。OpenRouterには無料モデルあり" },
+    steps: [
+      { text: "OpenRouter のキー画面を開き、Googleアカウントなどでログインします。", link: { url: "https://openrouter.ai/keys", label: "APIキー画面を開く" } },
+      { text: "「Create Key」でキーを作成し、表示された文字列をコピーします。" },
+      { text: "「APIのベースURL」は https://openrouter.ai/api/v1 のままで構いません。" },
+      { text: "モデル一覧から使いたいモデル名をコピーします。画像を読めるモデル(vision対応)を選んでください。", link: { url: "https://openrouter.ai/models", label: "モデル一覧を開く" } },
+      { text: "この画面に戻り、キーとモデル名を貼り付けて「接続テスト」を押します。" },
+    ],
+    notes: [
+      { tone: "info", text: "モデル名の末尾が :free のものは無料で使えます(1日の回数制限あり)。" },
+      { tone: "info", text: "Groqやローカルで動かしているサーバーを使う場合は、ベースURLをそのサービスのものに変えてください。" },
+      { tone: "warn", text: "画像に対応していないモデルを選ぶと、写真解析は失敗します。" },
+    ],
+  },
+};
+
+function getProviderGuide(id) {
+  return PROVIDER_GUIDES[id] || PROVIDER_GUIDES[DEFAULT_PROVIDER];
 }
 
 // ---------------------------------------------------------------
