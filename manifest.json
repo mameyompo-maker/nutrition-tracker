@@ -22,5 +22,35 @@
       "type": "image/png",
       "purpose": "any maskable"
     }
+  ],
+  "id": "/nutrition-tracker/",
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
+  "launch_handler": {
+    "client_mode": "focus-existing"
+  },
+  "categories": [
+    "health",
+    "food",
+    "lifestyle"
+  ],
+  "dir": "ltr",
+  "prefer_related_applications": false,
+  "shortcuts": [
+    {
+      "name": "食事を記録",
+      "short_name": "記録",
+      "description": "写真を撮って栄養を記録する",
+      "url": "./index.html?view=capture",
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
   ]
 }

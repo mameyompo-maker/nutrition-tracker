@@ -98,6 +98,36 @@ html, body {
   -webkit-text-size-adjust: 100%;
 }
 
+/* ---------------- ホーム画面から起動したときの挙動 ----------------
+   引っ張って更新、行き過ぎたときの跳ね返り、長押しのメニュー、
+   文字の選択、ダブルタップの拡大 —— ブラウザらしさが出る動きを止めて、
+   入れたアプリと同じ感触にする。入力欄と読み物だけは選択できるまま残す。 */
+
+html {
+  overscroll-behavior: none;
+  height: 100%;
+}
+body {
+  overscroll-behavior-y: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+input, textarea, select, .sheet-body, .guide-lead, .steps, .guide-note, pre, code {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+button, .row, .tab-btn, .btn, label, select, a {
+  touch-action: manipulation;
+}
+img { -webkit-user-drag: none; user-drag: none; }
+
+/* ホーム画面から起動したときだけ、上部の余白を少し広げて収まりをよくする */
+@media (display-mode: standalone) {
+  #app { padding-top: 20px; }
+}
+
 body {
   padding-top: var(--safe-top);
   padding-bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 8px);

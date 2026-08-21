@@ -1,13 +1,14 @@
 // 最小限のサービスワーカー: アプリの見た目(シェル)をキャッシュしてオフラインでも開けるようにする。
 // 栄養解析にはネット接続と、利用者自身のAI APIキーが必要です。
 
-const CACHE_NAME = "nutriapp-shell-v5";
+const CACHE_NAME = "nutriapp-shell-v6";
 const ASSETS = [
   "./",
   "./index.html",
   "./style.css",
   "./icons.js",
   "./nutrition.js",
+  "./exif.js",
   "./storage.js",
   "./api.js",
   "./app.js",
@@ -33,14 +34,40 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  const url = new URL(event.request.url);
+  const req = event.request;
+  if (req.method !== "GET") return;
+  const url = new URL(req.url);
   // 外部のAI APIへのリクエストはキャッシュしない(常にネットワークへ)
   if (url.origin !== self.location.origin) return;
 
+  // 画面そのものの読み込みはネットワークを先に試す。
+  // こうしておくと、新しい版を出したときに次の起動で自然に切り替わる。
+  if (req.mode === "navigate") {
+    event.respondWith(
+      fetch(req)
+        .then((res) => {
+          const copy = res.clone();
+          caches.open(CACHE_NAME).then((c) => c.put(req, copy)).catch(() => {});
+          return res;
+        })
+        .catch(() => caches.match(req).then((c) => c || caches.match("./index.html")))
+    );
+    return;
+  }
+
+  // それ以外はキャッシュを即返し、裏で新しいものを取り直しておく
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).catch(() => cached);
+    caches.match(req).then((cached) => {
+      const network = fetch(req)
+        .then((res) => {
+          if (res && res.status === 200 && res.type === "basic") {
+            const copy = res.clone();
+            caches.open(CACHE_NAME).then((c) => c.put(req, copy)).catch(() => {});
+          }
+          return res;
+        })
+        .catch(() => cached);
+      return cached || network;
     })
   );
 });

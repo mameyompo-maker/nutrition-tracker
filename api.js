@@ -12,18 +12,40 @@
 // 使用後にキーを削除することをおすすめします。
 // ---------------------------------------------------------------
 
-const ANALYSIS_PROMPT = `あなたは経験豊富な管理栄養士です。添付された画像を見て、次の手順で栄養価を求めてください。
+const ANALYSIS_PROMPT = `あなたは経験豊富な管理栄養士です。添付された画像から、その食事の栄養価を求めてください。
 
-【手順】
-1. まず、画像の中に「栄養成分表示」「成分表(目安)」のような、エネルギー・たんぱく質・脂質・炭水化物・食塩相当量などの数値が印刷/表示された表やラベルが写っていないか確認してください。
-   これは実際の料理の写真そのものだけでなく、宅配弁当・社食・コンビニ食品のアプリ画面やパッケージのスクリーンショットである場合も含みます。
-2. そのような数値表示が見つかった場合は、あなた自身で推定するのではなく、そこに書かれている数値をできるだけ正確に読み取って使ってください。表示されていない栄養素(食物繊維・ビタミン・ミネラル類など)だけ、料理の内容から一般的な値を推定してください。この場合 "source" は "label" にしてください。
-3. そのような数値表示が見つからない場合は、写っている料理・食品を特定し、写真全体（1食分）の栄養価をあなたの知識から推定してください。この場合 "source" は "estimate" にしてください。
+【手順1: 栄養成分表示がないか確認する】
+画像の中に「栄養成分表示」「成分表(目安)」のような、エネルギー・たんぱく質・脂質・炭水化物・食塩相当量などの数値が印刷/表示された表やラベルが写っていないか確認してください。実際の料理の写真だけでなく、宅配弁当・社食・コンビニ食品のアプリ画面やパッケージのスクリーンショットである場合も含みます。
+見つかった場合は、自分で推定せず、そこに書かれている数値をできるだけ正確に読み取って使ってください。表示のない栄養素(食物繊維・ビタミン・ミネラル類など)だけを料理の内容から推定します。この場合 "source" は "label" とし、手順2・3は省略してかまいません。
 
-必ず次のJSON形式のみで出力してください。前置きや説明文、コードブロックの記法(\`\`\`)は一切つけないでください。
+【手順2: 量を決める ← ここが最も重要】
+栄養価の誤差は、料理の種類の取り違えよりも、量の見誤りによって生じます。「大盛りなのか、カメラを近づけただけなのか」を必ず区別してください。次の優先順位で、写っているものの実際の大きさを決めます。
+
+(A) 別途「この写真の撮影情報」が与えられている場合は、それを最優先で使ってください。写る範囲の実寸(横◯cm)が示されていれば、料理や食器が画像の横幅の何割を占めるかを見て、実際の直径・長さをcmで求めます。
+(B) 実寸が与えられていない場合は、写り込んでいる「大きさが分かっているもの」を探して基準にします。目安は次のとおりです。
+    箸 21〜23cm / 割り箸 20〜21cm / ご飯茶碗 口径11〜12cm / 味噌汁椀 口径10.5〜12cm
+    小皿 直径9〜12cm / 取り皿 15〜18cm / 大皿 23〜27cm / ラーメン丼 口径18〜21cm
+    カレー皿 長径22〜24cm / 湯呑み 口径7〜8cm / マグカップ 口径8〜8.5cm
+    500mLペットボトルと350mL缶 直径6.6cm / レンゲ 13〜15cm / カレースプーン 18〜19cm
+    フォーク 19〜20cm / スマートフォン 幅7〜7.8cm / コンビニ弁当容器 20×14cm前後
+    食パン6枚切り 一辺約12cm(1枚約60g) / 卵Mサイズ 長径約6cm(約60g)
+(C) どちらも使えない場合に限り、一般的な一人前と仮定します。この場合 "confidence" は "low" にしてください。
+
+決めた大きさから、料理ごとの重量(g)を見積もります。参考として、ご飯茶碗1杯(軽め120g/普通150g/大盛り250g)、食パン6枚切り1枚60g、ゆで麺1玉200〜230g、味噌汁1杯150〜180mL、鶏むね肉1枚200〜250g、生卵1個50g(可食部)。
+
+【手順3: 栄養価を求める】
+手順2で決めた重量をもとに、日本食品標準成分表の一般的な値から栄養価を計算してください。調理法(揚げる・炒める・茹でる)による油の吸収や水分の増減も考慮してください。この場合 "source" は "estimate" です。
+
+【出力】
+必ず次のJSON形式のみで出力してください。前置きや説明文、コードブロックの記法は一切つけないでください。
 
 {
-  "items": [ { "name": "料理名や食品名", "amount": "推定量(例: 茶碗1杯・150g など)" } ],
+  "items": [ { "name": "料理名や食品名", "amount": "推定量(例: 茶碗1杯・直径18cmの皿に1人前 など)", "grams": 数値(その料理の推定重量g) } ],
+  "portion": {
+    "basis": "量をどう決めたか(例: 撮影情報の実寸から算出 / 写り込んだ箸を基準 / 一般的な一人前と仮定)",
+    "reference": "基準にしたものと仮定した寸法(例: ご飯茶碗の口径を11.5cmと仮定)",
+    "totalGrams": 数値(1食分の合計重量g)
+  },
   "nutrients": {
     "calories": 数値(kcal),
     "protein": 数値(g),
@@ -49,10 +71,19 @@ const ANALYSIS_PROMPT = `あなたは経験豊富な管理栄養士です。添�
   },
   "source": "label" または "estimate",
   "confidence": "high" または "medium" または "low",
-  "note": "写真から判断しづらかった点があれば一言(なければ空文字)"
+  "note": "量の判断で迷った点があれば一言(なければ空文字)"
 }
 
-数値はすべて画像に対応する食事全体の合計値とし、単位はすべて上記の通りにしてください。分からない栄養素も、一般的な料理の標準的な値から最善の推定値を入れてください。null・空文字・文字列は使わず、必ず半角の数値を入れてください（0にしないでください）。`;
+数値はすべて画像に写っている食事全体の合計値とし、単位は上記のとおりにしてください。分からない栄養素も、その料理の標準的な値から最善の推定値を入れてください。null・空文字・文字列は使わず、必ず半角の数値を入れてください。`;
+
+// 撮影情報が読み取れた場合は、指示文の末尾に付け足して渡す
+function buildAnalysisPrompt(captureText) {
+  if (!captureText) return ANALYSIS_PROMPT;
+  return ANALYSIS_PROMPT +
+    "\n\n【この写真の撮影情報】\n" +
+    "写真そのものに記録されていた情報です。手順2でこれを最優先の手がかりにしてください。\n" +
+    captureText;
+}
 
 class ApiKeyError extends Error {}
 class ApiRequestError extends Error {}
@@ -334,7 +365,7 @@ async function postJson(url, headers, body) {
 // ---------------------------------------------------------------
 
 // Google Gemini (Google AI Studio) — 無料枠あり
-async function analyzeWithGemini({ dataUrl, apiKey, model }) {
+async function analyzeWithGemini({ dataUrl, apiKey, model, captureText }) {
   const { mediaType, base64 } = dataUrlToParts(dataUrl);
   const m = model || PROVIDERS.gemini.defaultModel;
   const data = await postJson(
@@ -345,7 +376,7 @@ async function analyzeWithGemini({ dataUrl, apiKey, model }) {
         {
           parts: [
             { inline_data: { mime_type: mediaType, data: base64 } },
-            { text: ANALYSIS_PROMPT },
+            { text: buildAnalysisPrompt(captureText) },
           ],
         },
       ],
@@ -363,7 +394,7 @@ async function analyzeWithGemini({ dataUrl, apiKey, model }) {
 }
 
 // Anthropic (Claude)
-async function analyzeWithAnthropic({ dataUrl, apiKey, model }) {
+async function analyzeWithAnthropic({ dataUrl, apiKey, model, captureText }) {
   const { mediaType, base64 } = dataUrlToParts(dataUrl);
   const data = await postJson(
     "https://api.anthropic.com/v1/messages",
@@ -380,7 +411,7 @@ async function analyzeWithAnthropic({ dataUrl, apiKey, model }) {
           role: "user",
           content: [
             { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-            { type: "text", text: ANALYSIS_PROMPT },
+            { type: "text", text: buildAnalysisPrompt(captureText) },
           ],
         },
       ],
@@ -392,7 +423,7 @@ async function analyzeWithAnthropic({ dataUrl, apiKey, model }) {
 }
 
 // OpenAI および OpenAI互換API (OpenRouter / Groq / ローカルサーバーなど)
-async function analyzeWithOpenAiCompatible({ dataUrl, apiKey, model, baseUrl, providerId }) {
+async function analyzeWithOpenAiCompatible({ dataUrl, apiKey, model, baseUrl, providerId, captureText }) {
   const base = (baseUrl || getProvider(providerId).baseUrl || "").replace(/\/+$/, "");
   if (!base) throw new ApiRequestError("APIのベースURLが設定されていません。設定を確認してください。");
   if (!model) throw new ApiRequestError("モデル名が設定されていません。設定を確認してください。");
@@ -410,7 +441,7 @@ async function analyzeWithOpenAiCompatible({ dataUrl, apiKey, model, baseUrl, pr
           role: "user",
           content: [
             { type: "image_url", image_url: { url: dataUrl } },
-            { type: "text", text: ANALYSIS_PROMPT },
+            { type: "text", text: buildAnalysisPrompt(captureText) },
           ],
         },
       ],
@@ -439,7 +470,7 @@ function getAiConfig(profile) {
   };
 }
 
-async function analyzeFoodPhoto({ dataUrl, profile }) {
+async function analyzeFoodPhoto({ dataUrl, profile, captureText }) {
   const cfg = getAiConfig(profile);
   if (!cfg.apiKey) throw new ApiKeyError("APIキーが設定されていません");
   return cfg.provider.analyze({
@@ -448,6 +479,7 @@ async function analyzeFoodPhoto({ dataUrl, profile }) {
     model: cfg.model,
     baseUrl: cfg.baseUrl,
     providerId: cfg.providerId,
+    captureText,
   });
 }
 
@@ -499,11 +531,27 @@ function normalizeAnalysisResult(parsed) {
   const items = Array.isArray(parsed?.items)
     ? parsed.items
         .filter((it) => it && typeof it === "object")
-        .map((it) => ({ name: String(it.name ?? ""), amount: String(it.amount ?? "") }))
+        .map((it) => {
+          const g = Number(it.grams);
+          return {
+            name: String(it.name ?? ""),
+            amount: String(it.amount ?? ""),
+            grams: Number.isFinite(g) && g > 0 ? Math.round(g) : null,
+          };
+        })
     : [];
+
+  const rawPortion = parsed?.portion && typeof parsed.portion === "object" ? parsed.portion : {};
+  const totalGrams = Number(rawPortion.totalGrams);
+  const portion = {
+    basis: String(rawPortion.basis ?? ""),
+    reference: String(rawPortion.reference ?? ""),
+    totalGrams: Number.isFinite(totalGrams) && totalGrams > 0 ? Math.round(totalGrams) : null,
+  };
 
   return {
     items,
+    portion,
     nutrients,
     source: parsed?.source === "label" ? "label" : "estimate",
     confidence: parsed?.confidence || "medium",

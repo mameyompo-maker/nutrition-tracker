@@ -1,35 +1,41 @@
 // ---------------------------------------------------------------
 // nutrition.js
-// 栄養目標の計算ロジック（成人向け・一般的な目安値）
-// 参考: 日本人の食事摂取基準(2020年版)の考え方を簡略化したもの。
-// 医療的な助言ではなく、あくまで一般的な目安として扱ってください。
+// 1日の必要栄養量の算出。
+//
+// 出典: 厚生労働省「日本人の食事摂取基準(2025年版)」策定検討会報告書
+//       https://www.mhlw.go.jp/stf/newpage_44138.html
+//
+// 数値はすべて同報告書の表から18歳以上の年齢区分ごとに転記したもので、
+// 概算や丸めは加えていない。改定時はこのファイルの表だけを差し替えればよい。
+//
+// 医療的な助言ではなく、健康な人の一般的な目安として扱うこと。
 // ---------------------------------------------------------------
 
 const NUTRIENT_META = {
-  calories:    { label: "エネルギー",     unit: "kcal" },
-  protein:     { label: "たんぱく質",     unit: "g" },
-  fat:         { label: "脂質",           unit: "g" },
-  carb:        { label: "炭水化物",       unit: "g" },
-  fiber:       { label: "食物繊維",       unit: "g" },
-  salt:        { label: "食塩相当量",     unit: "g", isLimit: true },
-  saturatedFat:{ label: "飽和脂肪酸",     unit: "g", isLimit: true },
-  calcium:     { label: "カルシウム",     unit: "mg" },
-  iron:        { label: "鉄",             unit: "mg" },
-  zinc:        { label: "亜鉛",           unit: "mg" },
-  magnesium:   { label: "マグネシウム",   unit: "mg" },
-  potassium:   { label: "カリウム",       unit: "mg" },
-  vitaminA:    { label: "ビタミンA",      unit: "µgRAE" },
-  vitaminC:    { label: "ビタミンC",      unit: "mg" },
-  vitaminD:    { label: "ビタミンD",      unit: "µg" },
-  vitaminE:    { label: "ビタミンE",      unit: "mg" },
-  vitaminB1:   { label: "ビタミンB1",     unit: "mg" },
-  vitaminB2:   { label: "ビタミンB2",     unit: "mg" },
-  vitaminB6:   { label: "ビタミンB6",     unit: "mg" },
-  vitaminB12:  { label: "ビタミンB12",    unit: "µg" },
-  folate:      { label: "葉酸",           unit: "µg" },
+  calories:     { label: "エネルギー",   unit: "kcal",  basis: "推定エネルギー必要量" },
+  protein:      { label: "たんぱく質",   unit: "g",     basis: "推奨量・目標量" },
+  fat:          { label: "脂質",         unit: "g",     basis: "目標量(20〜30%エネルギー)" },
+  carb:         { label: "炭水化物",     unit: "g",     basis: "目標量(50〜65%エネルギー)" },
+  fiber:        { label: "食物繊維",     unit: "g",     basis: "目標量" },
+  salt:         { label: "食塩相当量",   unit: "g",     basis: "目標量", isLimit: true },
+  saturatedFat: { label: "飽和脂肪酸",   unit: "g",     basis: "目標量(7%エネルギー以下)", isLimit: true },
+  calcium:      { label: "カルシウム",   unit: "mg",    basis: "推奨量" },
+  iron:         { label: "鉄",           unit: "mg",    basis: "推奨量" },
+  zinc:         { label: "亜鉛",         unit: "mg",    basis: "推奨量" },
+  magnesium:    { label: "マグネシウム", unit: "mg",    basis: "推奨量" },
+  potassium:    { label: "カリウム",     unit: "mg",    basis: "目標量" },
+  vitaminA:     { label: "ビタミンA",    unit: "µgRAE", basis: "推奨量" },
+  vitaminC:     { label: "ビタミンC",    unit: "mg",    basis: "推奨量" },
+  vitaminD:     { label: "ビタミンD",    unit: "µg",    basis: "目安量" },
+  vitaminE:     { label: "ビタミンE",    unit: "mg",    basis: "目安量" },
+  vitaminB1:    { label: "ビタミンB1",   unit: "mg",    basis: "推奨量" },
+  vitaminB2:    { label: "ビタミンB2",   unit: "mg",    basis: "推奨量" },
+  vitaminB6:    { label: "ビタミンB6",   unit: "mg",    basis: "推奨量" },
+  vitaminB12:   { label: "ビタミンB12",  unit: "µg",    basis: "目安量" },
+  folate:       { label: "葉酸",         unit: "µg",    basis: "推奨量" },
 };
 
-// ホーム画面のメインで見せる項目（多すぎると煩雑になるため）
+// ホーム画面のメインで見せる項目(多すぎると煩雑になるため)
 const PRIMARY_NUTRIENTS = ["calories", "protein", "fat", "carb", "fiber", "salt"];
 const SECONDARY_NUTRIENTS = [
   "saturatedFat", "calcium", "iron", "zinc", "magnesium", "potassium",
@@ -37,79 +43,228 @@ const SECONDARY_NUTRIENTS = [
   "vitaminB1", "vitaminB2", "vitaminB6", "vitaminB12", "folate",
 ];
 
-const ACTIVITY_LEVELS = {
-  low:    { label: "低い",   desc: "座り仕事が中心・あまり運動しない", factor: 1.5 },
-  normal: { label: "ふつう", desc: "立ち仕事や通勤・軽い運動を含む",   factor: 1.75 },
-  high:   { label: "高い",   desc: "力仕事や活発な運動習慣がある",     factor: 2.0 },
+// ---------------------------------------------------------------
+// 年齢区分(食事摂取基準の区分に合わせる)
+// 以降の表はすべてこの順に [18〜29, 30〜49, 50〜64, 65〜74, 75以上] で並ぶ
+// ---------------------------------------------------------------
+
+const AGE_BANDS = [
+  { key: "18-29", min: 18, max: 29, label: "18〜29歳" },
+  { key: "30-49", min: 30, max: 49, label: "30〜49歳" },
+  { key: "50-64", min: 50, max: 64, label: "50〜64歳" },
+  { key: "65-74", min: 65, max: 74, label: "65〜74歳" },
+  { key: "75+",   min: 75, max: 999, label: "75歳以上" },
+];
+
+function ageBandIndex(age) {
+  const i = AGE_BANDS.findIndex((b) => age >= b.min && age <= b.max);
+  return i === -1 ? 0 : i;
+}
+
+// ---------------------------------------------------------------
+// エネルギー
+//   推定エネルギー必要量 = 基礎代謝量(基礎代謝基準値 × 体重) × 身体活動レベル
+//   報告書 表3(基礎代謝量基準値)・表4/表5(身体活動レベル)
+// ---------------------------------------------------------------
+
+// 基礎代謝基準値 (kcal/kg体重/日) — 報告書 表3
+const BMR_PER_KG = {
+  male:   [23.7, 22.5, 21.8, 21.6, 21.5],
+  female: [22.1, 21.9, 20.7, 20.7, 20.7],
 };
 
-// 目標に応じてカロリー収支とたんぱく質量を調整する。
-// 増減量幅・g/kg量は一般的なトレーニング指導で使われる目安であり、個人差があります。
+// 身体活動レベル基準値 — 報告書 表4・表5
+// 75歳以上は「高い」が設定されていないため、「ふつう」と同じ値を用いる
+const PAL_BY_BAND = {
+  low:    [1.50, 1.50, 1.50, 1.50, 1.40],
+  normal: [1.75, 1.75, 1.75, 1.70, 1.70],
+  high:   [2.00, 2.00, 2.00, 1.90, 1.70],
+};
+
+const ACTIVITY_LEVELS = {
+  low:    { label: "低い",   desc: "生活の大部分が座位で、静的な活動が中心" },
+  normal: { label: "ふつう", desc: "座位中心の仕事だが、職場内での移動や立位での作業・接客、通勤や買い物での歩行、家事、軽いスポーツのいずれかを含む" },
+  high:   { label: "高い",   desc: "移動や立位の多い仕事に従事している、または余暇に活発な運動習慣がある" },
+};
+
+// ---------------------------------------------------------------
+// たんぱく質・エネルギー産生栄養素バランス
+// ---------------------------------------------------------------
+
+// たんぱく質 推奨量 (g/日)
+const PROTEIN_RDA = {
+  male:   [65, 65, 65, 60, 60],
+  female: [50, 50, 50, 50, 50],
+};
+
+// たんぱく質 目標量 (%エネルギー) — 男女共通
+const PROTEIN_DG = [[13, 20], [13, 20], [14, 20], [15, 20], [15, 20]];
+
+// 脂質・炭水化物・飽和脂肪酸の目標量 (%エネルギー) — 18歳以上は男女・年齢共通
+const FAT_DG = [20, 30];
+const CARB_DG = [50, 65];
+const SATURATED_FAT_DG_MAX = 7;
+
+// ---------------------------------------------------------------
+// その他の栄養素 (18歳以上の年齢区分ごと)
+//   推奨量: たんぱく質・カルシウム・鉄・亜鉛・マグネシウム・
+//           ビタミンA/C/B1/B2/B6・葉酸
+//   目安量: ビタミンD/E/B12
+//   目標量: 食物繊維・食塩相当量・カリウム
+// ---------------------------------------------------------------
+
+const DRI = {
+  fiber:      { male: [20, 22, 22, 21, 20],       female: [18, 18, 18, 18, 17] },
+  salt:       { male: [7.5, 7.5, 7.5, 7.5, 7.5],  female: [6.5, 6.5, 6.5, 6.5, 6.5] },
+  potassium:  { male: [3000, 3000, 3000, 3000, 3000], female: [2600, 2600, 2600, 2600, 2600] },
+  calcium:    { male: [800, 750, 750, 750, 750],  female: [650, 650, 650, 650, 600] },
+  magnesium:  { male: [340, 380, 370, 350, 330],  female: [280, 290, 290, 280, 270] },
+  zinc:       { male: [9.0, 9.5, 9.5, 9.0, 9.0],  female: [7.5, 8.0, 8.0, 7.5, 7.0] },
+  vitaminA:   { male: [850, 900, 900, 850, 800],  female: [650, 700, 700, 700, 650] },
+  vitaminC:   { male: [100, 100, 100, 100, 100],  female: [100, 100, 100, 100, 100] },
+  vitaminD:   { male: [9.0, 9.0, 9.0, 9.0, 9.0],  female: [9.0, 9.0, 9.0, 9.0, 9.0] },
+  vitaminE:   { male: [6.5, 6.5, 6.5, 7.5, 7.0],  female: [5.0, 6.0, 6.0, 7.0, 6.0] },
+  vitaminB1:  { male: [1.1, 1.2, 1.1, 1.0, 1.0],  female: [0.8, 0.9, 0.8, 0.8, 0.7] },
+  vitaminB2:  { male: [1.6, 1.7, 1.6, 1.4, 1.4],  female: [1.2, 1.2, 1.2, 1.1, 1.1] },
+  vitaminB6:  { male: [1.5, 1.5, 1.5, 1.4, 1.4],  female: [1.2, 1.2, 1.2, 1.2, 1.2] },
+  vitaminB12: { male: [4.0, 4.0, 4.0, 4.0, 4.0],  female: [4.0, 4.0, 4.0, 4.0, 4.0] },
+  folate:     { male: [240, 240, 240, 240, 240],  female: [240, 240, 240, 240, 240] },
+};
+
+// 鉄だけは女性で月経の有無により推奨量が分かれる。
+// 65歳以上には「月経あり」の値が設定されていないため、月経なしの値を用いる。
+const IRON_RDA = {
+  male:            [7.0, 7.5, 7.0, 7.0, 6.5],
+  femaleNoPeriod:  [6.0, 6.0, 6.0, 6.0, 5.5],
+  femaleWithPeriod:[10.0, 10.5, 10.5, null, null],
+};
+
+// ---------------------------------------------------------------
+// 目標(増量・減量)による調整
+//
+// ここだけは食事摂取基準の範囲外。体格を変えたい人向けの一般的な目安として、
+// エネルギーを増減し、たんぱく質を体重当たりで確保する。
+// ただし、たんぱく質は推奨量を下回らず、目標量の上限(20%エネルギー)も超えない。
+// ---------------------------------------------------------------
+
 const GOALS = {
-  maintain: { label: "維持",     desc: "今の体格をキープしたい",           calorieAdjust: 0 },
-  bulk:     { label: "増量",     desc: "筋肉をつけて体を大きくしたい",     calorieAdjust: 350 },
-  cut:      { label: "減量",     desc: "脂肪を減らして引き締めたい",       calorieAdjust: -400 },
+  maintain: { label: "維持", desc: "今の体格をキープしたい", calorieAdjust: 0 },
+  bulk:     { label: "増量", desc: "筋肉をつけて体を大きくしたい", calorieAdjust: 350 },
+  cut:      { label: "減量", desc: "脂肪を減らして引き締めたい", calorieAdjust: -400 },
 };
 const PROTEIN_PER_KG = { bulk: 1.8, cut: 2.0 };
 
-function calcBMR(sex, weightKg, heightCm, age) {
-  // Mifflin-St Jeor式
-  const base = 10 * weightKg + 6.25 * heightCm - 5 * age;
-  return sex === "male" ? base + 5 : base - 161;
+// ---------------------------------------------------------------
+// 算出
+// ---------------------------------------------------------------
+
+function round1(v) {
+  return Math.round(v * 10) / 10;
+}
+
+// 基礎代謝量(kcal/日)
+function calcBMR(sex, weightKg, age) {
+  const i = ageBandIndex(age);
+  const perKg = (BMR_PER_KG[sex] || BMR_PER_KG.male)[i];
+  return perKg * weightKg;
+}
+
+function ironTarget(sex, bandIndex, hasPeriod) {
+  if (sex === "male") return IRON_RDA.male[bandIndex];
+  if (hasPeriod) {
+    const v = IRON_RDA.femaleWithPeriod[bandIndex];
+    if (v != null) return v;
+  }
+  return IRON_RDA.femaleNoPeriod[bandIndex];
+}
+
+// 算出の根拠を画面に出せるようにまとめて返す
+function targetBasis(profile) {
+  const i = ageBandIndex(profile.age);
+  const sex = profile.sex === "female" ? "female" : "male";
+  const activity = ACTIVITY_LEVELS[profile.activity] ? profile.activity : "normal";
+  return {
+    bandIndex: i,
+    bandLabel: AGE_BANDS[i].label,
+    sexLabel: sex === "male" ? "男性" : "女性",
+    bmrPerKg: BMR_PER_KG[sex][i],
+    bmr: Math.round(calcBMR(sex, profile.weight, profile.age)),
+    pal: PAL_BY_BAND[activity][i],
+    activityLabel: ACTIVITY_LEVELS[activity].label,
+    palIsSubstituted: i === 4 && activity === "high",
+  };
 }
 
 function calcTargets(profile) {
-  const { sex, age, height, weight, activity, goal } = profile;
-  const bmr = calcBMR(sex, weight, height, age);
-  const factor = (ACTIVITY_LEVELS[activity] || ACTIVITY_LEVELS.normal).factor;
-  const tdee = bmr * factor;
-  const goalMeta = GOALS[goal] || GOALS.maintain;
+  const sex = profile.sex === "female" ? "female" : "male";
+  const i = ageBandIndex(profile.age);
+  const activity = ACTIVITY_LEVELS[profile.activity] ? profile.activity : "normal";
+  const goalMeta = GOALS[profile.goal] || GOALS.maintain;
+  const hasPeriod = sex === "female" && profile.menstruation !== "no";
 
-  const isMale = sex === "male";
+  // エネルギー: 基礎代謝基準値 × 体重 × 身体活動レベル
+  const eer = calcBMR(sex, profile.weight, profile.age) * PAL_BY_BAND[activity][i];
+  const calories = Math.max(1000, Math.round((eer + goalMeta.calorieAdjust) / 50) * 50);
 
-  const calories = Math.round(tdee + goalMeta.calorieAdjust);
+  // たんぱく質: 推奨量と目標量の下限のうち大きい方。
+  // 増量・減量では体重当たりの量を使うが、目標量の上限(20%エネルギー)は超えない。
+  const [dgLow, dgHigh] = PROTEIN_DG[i];
+  const rda = PROTEIN_RDA[sex][i];
+  const proteinFloor = Math.max(rda, (calories * dgLow) / 100 / 4);
+  const proteinCeil = (calories * dgHigh) / 100 / 4;
+  // 丸めたあとに目標量の範囲から外れないよう、下限は切り上げ・上限は切り捨てで挟む
+  const perKg = PROTEIN_PER_KG[profile.goal];
+  let protein = perKg ? Math.round(profile.weight * perKg) : Math.ceil(proteinFloor);
+  protein = Math.max(protein, Math.ceil(proteinFloor));
+  protein = Math.min(protein, Math.floor(proteinCeil));
 
-  // 増量・減量時はたんぱく質を体重比(g/kg)で優先して確保し、脂質は総カロリーの25%、
-  // 炭水化物は残りで埋める。維持の場合は従来通りカロリー比(15/25/60%)で配分する。
-  const proteinPerKg = PROTEIN_PER_KG[goal];
-  let protein, fat, carb;
-  if (proteinPerKg) {
-    protein = Math.round(weight * proteinPerKg);
-    fat = Math.round((calories * 0.25) / 9);
+  // 脂質: 目標量20〜30%エネルギーの中央値25%
+  let fat = Math.round((calories * 25) / 100 / 9);
+
+  // 炭水化物: 残り。目標量50〜65%から外れる場合は脂質を範囲内で調整して収める
+  let carb = Math.round((calories - protein * 4 - fat * 9) / 4);
+  const carbLow = Math.round((calories * CARB_DG[0]) / 100 / 4);
+  const carbHigh = Math.round((calories * CARB_DG[1]) / 100 / 4);
+  if (carb < carbLow || carb > carbHigh) {
+    const wanted = Math.min(carbHigh, Math.max(carbLow, carb));
+    const fatKcal = calories - protein * 4 - wanted * 4;
+    const fatLow = (calories * FAT_DG[0]) / 100 / 9;
+    const fatHigh = (calories * FAT_DG[1]) / 100 / 9;
+    fat = Math.round(Math.min(fatHigh, Math.max(fatLow, fatKcal / 9)));
     carb = Math.max(0, Math.round((calories - protein * 4 - fat * 9) / 4));
-  } else {
-    protein = Math.round((calories * 0.15) / 4);
-    fat = Math.round((calories * 0.25) / 9);
-    carb = Math.round((calories * 0.6) / 4);
   }
-  const saturatedFat = Math.round(((calories * 0.07) / 9) * 10) / 10;
+
+  const pick = (key) => DRI[key][sex][i];
 
   return {
     calories,
     protein,
     fat,
     carb,
-    fiber: isMale ? 21 : 18,
-    salt: isMale ? 7.5 : 6.5,
-    saturatedFat,
-    calcium: isMale ? 750 : 650,
-    iron: isMale ? 7.5 : 10.5,
-    zinc: isMale ? 11 : 8,
-    magnesium: isMale ? 340 : 270,
-    potassium: isMale ? 2500 : 2000,
-    vitaminA: isMale ? 850 : 650,
-    vitaminC: 100,
-    vitaminD: 8.5,
-    vitaminE: isMale ? 6.0 : 5.0,
-    vitaminB1: isMale ? 1.4 : 1.1,
-    vitaminB2: isMale ? 1.6 : 1.2,
-    vitaminB6: isMale ? 1.4 : 1.1,
-    vitaminB12: 2.4,
-    folate: 240,
+    fiber: pick("fiber"),
+    salt: pick("salt"),
+    saturatedFat: round1((calories * SATURATED_FAT_DG_MAX) / 100 / 9),
+    calcium: pick("calcium"),
+    iron: ironTarget(sex, i, hasPeriod),
+    zinc: pick("zinc"),
+    magnesium: pick("magnesium"),
+    potassium: pick("potassium"),
+    vitaminA: pick("vitaminA"),
+    vitaminC: pick("vitaminC"),
+    vitaminD: pick("vitaminD"),
+    vitaminE: pick("vitaminE"),
+    vitaminB1: pick("vitaminB1"),
+    vitaminB2: pick("vitaminB2"),
+    vitaminB6: pick("vitaminB6"),
+    vitaminB12: pick("vitaminB12"),
+    folate: pick("folate"),
   };
 }
 
-// 不足している栄養素に対する簡易アドバイス（食品例）
+// ---------------------------------------------------------------
+// アドバイス
+// ---------------------------------------------------------------
+
 const ADVICE_FOOD = {
   protein:   { text: "たんぱく質が不足気味です。鶏むね肉・卵・豆腐・魚・納豆などを足してみましょう。", iconKey: "protein" },
   fiber:     { text: "食物繊維が不足気味です。野菜・きのこ・海藻・玄米などを増やしてみましょう。",   iconKey: "fiber" },
@@ -130,17 +285,17 @@ const ADVICE_FOOD = {
 };
 
 const OVER_WARN = {
-  calories:     { text: "エネルギーが目標を超えています。次の食事は軽めを意識しましょう。",           iconKey: "calories", warn: true },
-  fat:          { text: "脂質が目標を超えています。揚げ物や脂の多い肉は控えめに。",                   iconKey: "fat", warn: true },
-  salt:         { text: "食塩相当量が目標を超えています。汁物や加工食品は控えめに。",                 iconKey: "salt", warn: true },
-  carb:         { text: "炭水化物が目標を超えています。主食の量を少し調整してみましょう。",           iconKey: "carb", warn: true },
-  saturatedFat: { text: "飽和脂肪酸が目標を超えています。揚げ物やバター、脂身の多い肉は控えめに。", iconKey: "saturatedFat", warn: true },
+  calories:     { text: "エネルギーが目標を超えています。次の食事は軽めを意識しましょう。",         iconKey: "calories", warn: true },
+  fat:          { text: "脂質が目標を超えています。揚げ物や脂の多い肉は控えめに。",                 iconKey: "fat", warn: true },
+  salt:         { text: "食塩相当量が目標量を超えています。汁物や加工食品は控えめに。",             iconKey: "salt", warn: true },
+  carb:         { text: "炭水化物が目標を超えています。主食の量を少し調整してみましょう。",         iconKey: "carb", warn: true },
+  saturatedFat: { text: "飽和脂肪酸が目標量を超えています。揚げ物やバター、脂身の多い肉は控えめに。", iconKey: "saturatedFat", warn: true },
 };
 
 function buildAdvice(consumed, targets) {
   const items = [];
 
-  // 摂りすぎ警告（優先度高め）
+  // 摂りすぎ警告(優先度高め)
   ["calories", "salt", "fat", "carb", "saturatedFat"].forEach((key) => {
     const c = consumed[key] || 0;
     const t = targets[key];
@@ -156,7 +311,7 @@ function buildAdvice(consumed, targets) {
   });
 
   if (items.length === 0) {
-    items.push({ text: "ここまでの食事は栄養バランスが良好です。この調子で続けましょう！", iconKey: "check" });
+    items.push({ text: "ここまでの食事は栄養バランスが良好です。この調子で続けましょう。", iconKey: "check" });
   }
   return items.slice(0, 5);
 }

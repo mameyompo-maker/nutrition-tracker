@@ -19,12 +19,14 @@ function loadProfile() {
 const state = {
   profile: loadProfile(),
   view: null,
-  capture: { file: null, dataUrl: null, analyzing: false, result: null, error: null, showManual: false },
+  capture: { file: null, dataUrl: null, analyzing: false, result: null, error: null, showManual: false, captureInfo: null, captureText: "" },
   showDetail: false,
   historyOpenDate: null,
   editingProfile: false,
   obStep: 0,
   sheet: null,
+  // 初回設定では、AIにつながることを確かめるまで先に進めない
+  connectionVerified: false,
 };
 
 // 設定フォームでAIサービスを切り替えたとき、入力途中の値を失わないための一時置き場
@@ -62,6 +64,7 @@ function showToast(msg) {
 
 const CAPTURE_INITIAL = () => ({
   file: null, dataUrl: null, analyzing: false, result: null, error: null, showManual: false,
+  captureInfo: null, captureText: "",
 });
 
 // ---------------- 初期化・ルーティング ----------------
@@ -69,7 +72,8 @@ const CAPTURE_INITIAL = () => ({
 const TAB_ICONS = { home: "home", capture: "camera", history: "calendar", settings: "settings" };
 
 function init() {
-  state.view = state.profile ? "home" : "onboarding";
+  const wanted = new URLSearchParams(location.search).get("view");
+  state.view = state.profile ? (["home", "capture", "history", "settings"].includes(wanted) ? wanted : "home") : "onboarding";
 
   $$(".tab-btn").forEach((btn) => {
     const wrap = $(".ic-wrap", btn);
@@ -80,6 +84,7 @@ function init() {
 
   document.body.addEventListener("click", onBodyClick);
   document.body.addEventListener("change", onBodyChange);
+  document.body.addEventListener("input", onBodyInput);
   document.body.addEventListener("submit", onBodySubmit);
   document.addEventListener("paste", onPaste);
   document.addEventListener("keydown", (e) => {
@@ -122,7 +127,10 @@ function render() {
 
   // 設定フォームが出ているときは、選択中のAIサービスに合わせて中身を整える
   const profileForm = $("#onboarding-form") || $("#settings-form");
-  if (profileForm) applyProviderUi(profileForm);
+  if (profileForm) {
+    applyProviderUi(profileForm);
+    updateProfileFormUi(profileForm);
+  }
 }
 
 // ---------------- シート(手順書などを重ねて開く) ----------------
@@ -175,6 +183,8 @@ function onBodyClick(e) {
     case "close-sheet": closeSheet(); break;
     case "open-key-guide": openKeyGuide(actionEl); break;
     case "open-about": openAboutSheet(); break;
+    case "open-capture-info": openCaptureInfoSheet(); break;
+    case "open-basis": openBasisSheet(); break;
     case "open-camera": $("#file-camera").click(); break;
     case "open-library": $("#file-library").click(); break;
     case "retake": state.capture = CAPTURE_INITIAL(); render(); break;
@@ -220,6 +230,37 @@ function onBodyChange(e) {
   }
   if (e.target.dataset && e.target.dataset.role === "provider-select") {
     onProviderChange(e.target);
+    return;
+  }
+  if (e.target.name === "sex" || e.target.name === "age" || e.target.name === "activity") {
+    updateProfileFormUi(e.target.closest("form"));
+  }
+}
+
+// キーやモデル名を書き換えたら、確認済みの状態は取り消す
+function onBodyInput(e) {
+  const name = e.target.name;
+  if (name === "apiKey" || name === "model" || name === "baseUrl") {
+    if (state.connectionVerified) setConnectionVerified(false);
+    const out = $("[data-role=test-result]", e.target.closest("form") || document);
+    if (out) { out.textContent = "キーとモデル名が正しいか確かめます"; out.style.color = ""; }
+  }
+  if (name === "age") updateProfileFormUi(e.target.closest("form"));
+}
+
+// 性別・年齢・活動レベルに応じて、フォームの補足表示を切り替える
+function updateProfileFormUi(form) {
+  if (!form) return;
+  const fd = new FormData(form);
+  const age = parseInt(fd.get("age"), 10);
+  const sex = fd.get("sex");
+  // 鉄の推奨量は月経の有無で変わる。65歳以上には「月経あり」の値が設定されていない。
+  const row = $("[data-role=menstruation-row]", form);
+  if (row) row.classList.toggle("hidden", !(sex === "female" && Number.isFinite(age) && age >= 18 && age < 65));
+  const desc = $("[data-role=activity-desc]", form);
+  if (desc) {
+    const lv = ACTIVITY_LEVELS[fd.get("activity")] || ACTIVITY_LEVELS.normal;
+    desc.textContent = `${lv.label}: ${lv.desc}`;
   }
 }
 
@@ -274,6 +315,7 @@ function readProfileForm(form) {
     weight: parseFloat(fd.get("weight")),
     activity: fd.get("activity"),
     goal: fd.get("goal") || "maintain",
+    menstruation: fd.get("menstruation") === "no" ? "no" : "yes",
     provider,
     apiKeys,
     models,
@@ -312,6 +354,11 @@ function submitProfileForm(form, isOnboarding) {
     if (isOnboarding && state.obStep !== 1) gotoObStep(1);
     return;
   }
+  if (isOnboarding && !state.connectionVerified) {
+    showFormError(form, "「接続テスト」でAIにつながることを確認してから進んでください。");
+    if (state.obStep !== OB_LAST_STEP) gotoObStep(OB_LAST_STEP);
+    return;
+  }
   showFormError(form, null);
   state.profile = p;
   state.editingProfile = false;
@@ -319,6 +366,24 @@ function submitProfileForm(form, isOnboarding) {
   Storage.saveProfile(p);
   showToast(isOnboarding ? "準備ができました" : "変更を保存しました");
   setView("home");
+}
+
+// ---------------- 初回設定: AIにつながることを確かめるまで進ませない ----------------
+
+function setConnectionVerified(ok) {
+  state.connectionVerified = ok;
+  updateObGate();
+}
+
+function updateObGate() {
+  const form = $("#onboarding-form");
+  if (!form) return;
+  const btn = $("[data-role=ob-actions] button[type=submit]", form);
+  if (btn) btn.disabled = !state.connectionVerified;
+  const hint = $("[data-role=ob-gate]", form);
+  if (hint) hint.classList.toggle("hidden", state.connectionVerified);
+  const done = $("[data-role=ob-gate-done]", form);
+  if (done) done.classList.toggle("hidden", !state.connectionVerified);
 }
 
 // ---------------- オンボーディングの手順送り ----------------
@@ -331,7 +396,7 @@ function obFooterHtml(step) {
   }
   if (step === OB_LAST_STEP) {
     return `
-      <button type="submit" class="btn btn-primary">この内容ではじめる</button>
+      <button type="submit" class="btn btn-primary" disabled>この内容ではじめる</button>
       <button type="button" class="btn btn-plain" data-action="ob-back">戻る</button>
     `;
   }
@@ -358,6 +423,7 @@ function gotoObStep(n) {
   $$(".ob-progress i", form).forEach((dot, i) => dot.classList.toggle("on", i === step));
   const footer = $("[data-role=ob-actions]", form);
   if (footer) footer.innerHTML = obFooterHtml(step);
+  updateObGate();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -414,6 +480,7 @@ function applyProviderUi(form) {
     testResult.textContent = "キーとモデル名が正しいか確かめます";
     testResult.style.color = "";
   }
+  setConnectionVerified(false);
 }
 
 // AIサービスを切り替える前に、いま入力されている値を一時保存しておく
@@ -451,8 +518,10 @@ async function doTestConnection(rowEl) {
   try {
     await testAiConnection(probe);
     if (out) { out.textContent = "接続できました"; out.style.color = "var(--accent)"; }
+    setConnectionVerified(true);
   } catch (e) {
     if (out) { out.textContent = e.message || "接続できませんでした"; out.style.color = "var(--danger)"; }
+    setConnectionVerified(false);
   } finally {
     rowEl.disabled = false;
   }
@@ -495,6 +564,57 @@ function guideHtml(providerId) {
   `;
 }
 
+// 1日の目標値がどう出ているかを、計算式ごと見せる
+function openBasisSheet() {
+  const p = state.profile;
+  const b = targetBasis(p);
+  const t = calcTargets(p);
+  const goal = GOALS[p.goal] || GOALS.maintain;
+  const eer = Math.round(b.bmr * b.pal);
+  const rows = Object.keys(NUTRIENT_META)
+    .map((k) => `
+      <div class="row">
+        <span class="row-main">
+          <span class="row-label" style="font-size:15px;">${NUTRIENT_META[k].label}</span>
+          <span class="row-sub">${NUTRIENT_META[k].basis}</span>
+        </span>
+        <span class="row-value" style="font-size:15px;">${t[k]} ${NUTRIENT_META[k].unit}</span>
+      </div>`)
+    .join("");
+
+  openSheet("1日の目標の求め方", `
+    <p class="guide-lead">厚生労働省「日本人の食事摂取基準(2025年版)」の値を、あなたの年齢区分・性別・体重にあてはめて計算しています。</p>
+
+    <div class="group">
+      <div class="group-title">あてはめた区分</div>
+      <div class="list">
+        <div class="row"><span class="row-main"><span class="row-label" style="font-size:15px;">年齢区分</span></span><span class="row-value" style="font-size:15px;">${b.bandLabel}・${b.sexLabel}</span></div>
+        <div class="row"><span class="row-main"><span class="row-label" style="font-size:15px;">身体活動レベル</span></span><span class="row-value" style="font-size:15px;">${b.activityLabel}(${b.pal})</span></div>
+      </div>
+      ${b.palIsSubstituted ? `<div class="group-note">75歳以上には「高い」が設定されていないため、「ふつう」の値を用いています。</div>` : ""}
+    </div>
+
+    <div class="group">
+      <div class="group-title">エネルギー</div>
+      <div class="list">
+        <div class="row"><span class="row-main"><span class="row-label" style="font-size:15px;">基礎代謝量</span><span class="row-sub">基礎代謝基準値 ${b.bmrPerKg} kcal/kg × 体重 ${p.weight} kg</span></span><span class="row-value" style="font-size:15px;">${b.bmr} kcal</span></div>
+        <div class="row"><span class="row-main"><span class="row-label" style="font-size:15px;">推定エネルギー必要量</span><span class="row-sub">${b.bmr} kcal × 身体活動レベル ${b.pal}</span></span><span class="row-value" style="font-size:15px;">${eer} kcal</span></div>
+        ${goal.calorieAdjust !== 0 ? `<div class="row"><span class="row-main"><span class="row-label" style="font-size:15px;">目標「${goal.label}」による調整</span><span class="row-sub">食事摂取基準の範囲外の一般的な目安</span></span><span class="row-value" style="font-size:15px;">${goal.calorieAdjust > 0 ? "+" : ""}${goal.calorieAdjust} kcal</span></div>` : ""}
+        <div class="row"><span class="row-main"><span class="row-label" style="font-size:15px;">1日の目標</span><span class="row-sub">50 kcal 単位に丸めた値</span></span><span class="row-value" style="font-size:15px;">${t.calories} kcal</span></div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">栄養素ごとの目標</div>
+      <div class="list">${rows}</div>
+      <div class="group-note">
+        たんぱく質・脂質・炭水化物は、目標量(%エネルギー)の範囲に収まるように配分しています。
+        出典: <a href="https://www.mhlw.go.jp/stf/newpage_44138.html" target="_blank" rel="noopener noreferrer">厚生労働省「日本人の食事摂取基準(2025年版)」策定検討会報告書</a>
+      </div>
+    </div>
+  `);
+}
+
 function openAboutSheet() {
   openSheet("このアプリについて", `
     <p class="guide-lead">写真から栄養を読み取り、あなたに必要な量と比べるためのアプリです。専用のサーバーを持たず、すべてこの端末の中で完結します。</p>
@@ -517,6 +637,15 @@ async function handleFileSelected(file) {
     state.capture.dataUrl = dataUrl;
     state.capture.result = null;
     state.capture.error = null;
+    // 量の判定に使うため、写真に埋め込まれた撮影情報を読み取る(位置情報は読まない)
+    try {
+      const info = await readCaptureInfo(file);
+      state.capture.captureInfo = info;
+      state.capture.captureText = captureInfoText(info);
+    } catch (e) {
+      state.capture.captureInfo = null;
+      state.capture.captureText = "";
+    }
     render();
   } catch (e) {
     showToast("写真を読み込めませんでした");
@@ -539,6 +668,7 @@ async function doAnalyze() {
     state.capture.result = await analyzeFoodPhoto({
       dataUrl: state.capture.dataUrl,
       profile: state.profile,
+      captureText: state.capture.captureText,
     });
   } catch (e) {
     state.capture.error = e.message || "解析中にエラーが発生しました";
@@ -550,7 +680,7 @@ async function doAnalyze() {
 
 async function doCopyPrompt() {
   try {
-    await navigator.clipboard.writeText(ANALYSIS_PROMPT);
+    await navigator.clipboard.writeText(buildAnalysisPrompt(state.capture.captureText));
     showToast("指示文をコピーしました");
   } catch (e) {
     showToast("コピーできませんでした。手動で選択してコピーしてください");
@@ -635,6 +765,11 @@ function profileFieldsHtml(p, prefix) {
     <option value="female" ${p.sex === "female" ? "selected" : ""}>女性</option>
   `;
 
+  const menstruationOptions = `
+    <option value="yes" ${(p.menstruation || "yes") === "yes" ? "selected" : ""}>あり</option>
+    <option value="no" ${p.menstruation === "no" ? "selected" : ""}>なし</option>
+  `;
+
   return `
     <div class="group">
       <div class="group-title">からだのこと</div>
@@ -643,8 +778,15 @@ function profileFieldsHtml(p, prefix) {
         ${selectRow("性別", "sex", sexOptions, `${prefix}-sex`)}
         ${numberRow("身長", "height", `${prefix}-height`, "cm", p.height, 'min="100" max="230" step="0.1" placeholder="165"')}
         ${numberRow("体重", "weight", `${prefix}-weight`, "kg", p.weight, 'min="25" max="300" step="0.1" placeholder="58"')}
+        <div class="field-row hidden" data-role="menstruation-row">
+          <label class="field-label" for="${prefix}-menstruation">月経</label>
+          <select id="${prefix}-menstruation" name="menstruation">${menstruationOptions}</select>
+        </div>
       </div>
-      <div class="group-note">性別は必要栄養量の計算にのみ使います。</div>
+      <div class="group-note">
+        年齢・性別・体重は、食事摂取基準の年齢区分と基礎代謝基準値をあてはめるために使います。
+        鉄の推奨量は月経の有無で変わるため、18〜64歳の女性のみお尋ねしています。
+      </div>
     </div>
 
     <div class="group">
@@ -653,10 +795,9 @@ function profileFieldsHtml(p, prefix) {
         ${selectRow("活動レベル", "activity", activityOptions, `${prefix}-activity`)}
         ${selectRow("目標", "goal", goalOptions, `${prefix}-goal`)}
       </div>
+      <div class="group-note" data-role="activity-desc"></div>
       <div class="group-note">
-        活動レベル ——
-        ${Object.values(ACTIVITY_LEVELS).map((v) => `${v.label}: ${v.desc}`).join(" / ")}。
-        増量・減量を選ぶと、エネルギーとたんぱく質の目標量が調整されます。適切な量には個人差があるため、一般的な目安としてご利用ください。
+        増量・減量を選ぶと、エネルギーとたんぱく質の目標量が調整されます。ここだけは食事摂取基準の範囲外の、一般的な目安です。
       </div>
     </div>
   `;
@@ -762,11 +903,16 @@ function renderOnboarding() {
       <section class="ob-step" data-step="2">
         <div class="ob-hero" style="padding-bottom:24px;">
           <h1 class="large-title">AIにつなぐ</h1>
-          <p class="lede">写真を自動で読み取るための設定です。あとからでも設定できます。</p>
+          <p class="lede">写真から栄養を読み取るAIを登録します。つながることを確かめてから始めます。</p>
         </div>
         ${aiFieldsHtml(p, "ob")}
-        <div class="group-note" style="padding-top:0;">
-          設定しなくても、手入力や「APIキーを使わない方法」でアプリは使えます。
+        <div class="notice" data-role="ob-gate">
+          ${iconHtml("info", 16)}
+          <span>先に「接続テスト」を押して、AIにつながることを確認してください。確認できるまで次へ進めません。</span>
+        </div>
+        <div class="notice good hidden" data-role="ob-gate-done">
+          ${iconHtml("check", 16)}
+          <span>AIにつながることを確認しました。</span>
         </div>
       </section>
 
@@ -916,7 +1062,40 @@ function renderHome() {
 
 function renderResultForm(r) {
   const itemsText = r.items.length
-    ? r.items.map((it) => `${it.name}${it.amount ? `(${it.amount})` : ""}`).join("・")
+    ? r.items
+        .map((it) => {
+          const detail = [it.amount, it.grams ? `約${it.grams}g` : ""].filter(Boolean).join(" ");
+          return `${it.name}${detail ? `(${detail})` : ""}`;
+        })
+        .join("・")
+    : "";
+  const portion = r.portion || {};
+  const portionHtml = portion.totalGrams || portion.basis || portion.reference
+    ? `
+      <div class="group">
+        <div class="group-title">量の判断</div>
+        <div class="list">
+          ${portion.totalGrams ? `
+            <div class="row">
+              <span class="row-main"><span class="row-label" style="font-size:15px;">推定した合計重量</span></span>
+              <span class="row-value" style="font-size:15px;">${portion.totalGrams} g</span>
+            </div>` : ""}
+          ${portion.basis ? `
+            <div class="row">
+              <span class="row-main">
+                <span class="row-label" style="font-size:15px;">判断のしかた</span>
+                <span class="row-sub">${escapeHtml(portion.basis)}</span>
+              </span>
+            </div>` : ""}
+          ${portion.reference ? `
+            <div class="row">
+              <span class="row-main">
+                <span class="row-label" style="font-size:15px;">基準にしたもの</span>
+                <span class="row-sub">${escapeHtml(portion.reference)}</span>
+              </span>
+            </div>` : ""}
+        </div>
+      </div>`
     : "";
   const sourceBadge = r.source === "label"
     ? `<span class="badge accent">${iconHtml("label", 13)} 成分表示を読み取りました</span>`
@@ -932,6 +1111,8 @@ function renderResultForm(r) {
       ${r.source === "label" ? `<p class="footnote" style="margin-bottom:14px;">写真の中の成分表示の数値を使いました。表示のない栄養素はおおよその推定値です。</p>` : ""}
       ${itemsText ? `<p class="muted" style="margin-bottom:14px;">${escapeHtml(itemsText)}</p>` : ""}
       ${r.note ? `<p class="footnote" style="margin-bottom:14px;">${escapeHtml(r.note)}</p>` : ""}
+
+      ${portionHtml}
 
       <div class="group">
         <div class="group-title">この食事</div>
@@ -1001,6 +1182,44 @@ function renderManualPanel() {
   `;
 }
 
+// 読み取れた撮影情報を1行にまとめる(タップすると送信内容をそのまま確認できる)
+function captureBadgeHtml(info) {
+  if (!info) return "";
+  const g = info.geometry || {};
+  let text;
+  if (!info.hasExif) {
+    text = "撮影情報なし・量は写り込んだものから推定";
+  } else {
+    const parts = [];
+    if (g.focalLength35mm) parts.push(`35mm換算 ${g.focalLength35mm}mm`);
+    if (g.frameWidthCm) parts.push(`写る範囲 約${g.frameWidthCm}cm`);
+    if (info.model) parts.push(info.model);
+    text = parts.length ? `撮影情報あり・${parts.join(" ・ ")}` : "撮影情報あり";
+  }
+  return `
+    <button type="button" class="badge ${info.hasExif ? "accent" : ""}" data-action="open-capture-info"
+            style="border:none;cursor:pointer;font-family:inherit;margin-bottom:18px;max-width:100%;">
+      ${iconHtml(info.hasExif ? "camera" : "info", 13)}
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(text)}</span>
+    </button>
+  `;
+}
+
+function openCaptureInfoSheet() {
+  const info = state.capture.captureInfo;
+  const text = state.capture.captureText;
+  openSheet("この写真の撮影情報", `
+    <p class="guide-lead">量を正しく見積もるために、写真そのものに記録されていた情報を読み取り、AIへ写真と一緒に送ります。位置情報(GPS)は読み取らず、送信もしません。</p>
+    ${text
+      ? `<pre style="white-space:pre-wrap;font:13px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--fill);border-radius:var(--r-md);padding:14px;overflow-x:auto;">${escapeHtml(text)}</pre>`
+      : `<p class="muted">この写真からは撮影情報を読み取れませんでした。</p>`}
+    <div class="guide-notes" style="margin-top:16px;">
+      <div class="guide-note">${iconHtml("info", 15)}<span>35mm換算焦点距離と被写体距離が分かると、「写真の横幅が実際の何cmか」まで計算できます。ここまで分かると、大盛りなのか近づけて撮っただけなのかを取り違えにくくなります。</span></div>
+      ${info && !info.hasExif ? `<div class="guide-note warn">${iconHtml("shield", 15)}<span>スクリーンショットや、SNS・チャットを経由した画像は撮影情報が消えていることが多く、量の推定はその分あいまいになります。カメラで撮った元の写真を使うと精度が上がります。</span></div>` : ""}
+    </div>
+  `);
+}
+
 function renderCapture() {
   const c = state.capture;
 
@@ -1037,6 +1256,7 @@ function renderCapture() {
   return `
     <div class="nav-bar"><h1 class="large-title">記録</h1></div>
     <div class="photo-frame">${preview}</div>
+    ${c.dataUrl ? captureBadgeHtml(c.captureInfo) : ""}
     ${body}
   `;
 }
@@ -1111,6 +1331,7 @@ function renderSettings() {
   }
 
   const t = calcTargets(p);
+  const basis = targetBasis(p);
   const cfg = getAiConfig(p);
   const guide = getProviderGuide(cfg.providerId);
 
@@ -1128,12 +1349,19 @@ function renderSettings() {
           </span>
           <span class="row-chevron">${iconHtml("chevron", 14)}</span>
         </button>
-        <div class="row">
-          <span class="row-main"><span class="row-label" style="font-size:15px;">1日の目標</span></span>
-          <span class="row-value" style="font-size:15px;">${t.calories} kcal ・ P ${t.protein}g</span>
-        </div>
+        <button type="button" class="row with-icon tappable" data-action="open-basis">
+          <span class="row-icon neutral">${iconHtml("info", 16)}</span>
+          <span class="row-main">
+            <span class="row-label">1日の目標の求め方</span>
+            <span class="row-sub">${t.calories} kcal ・ たんぱく質 ${t.protein}g ・ ${basis.bandLabel}</span>
+          </span>
+          <span class="row-chevron">${iconHtml("chevron", 14)}</span>
+        </button>
       </div>
-      <div class="group-note">活動レベル「${ACTIVITY_LEVELS[p.activity].label}」・目標「${(GOALS[p.goal] || GOALS.maintain).label}」</div>
+      <div class="group-note">
+        活動レベル「${ACTIVITY_LEVELS[p.activity].label}」・目標「${(GOALS[p.goal] || GOALS.maintain).label}」。
+        目標値は厚生労働省「日本人の食事摂取基準(2025年版)」に基づいています。
+      </div>
     </div>
 
     <div class="group">
