@@ -1,0 +1,15 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">
+<title>shot</title>
+<style>html,body{margin:0;background:#8e8e93}
+iframe{width:390px;border:0;display:block;margin:0 auto;background:transparent}</style>
+</head><body>
+<script>
+  const q = new URLSearchParams(location.search);
+  const h = q.get("h") || "1500";
+  q.delete("h");
+  const f = document.createElement("iframe");
+  f.style.height = h + "px";
+  f.src = "./index.html?" + q.toString();
+  document.body.appendChild(f);
+</script>
+</body></html>

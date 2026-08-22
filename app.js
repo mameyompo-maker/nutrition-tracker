@@ -339,6 +339,8 @@ function onBodyClick(e) {
     case "open-weight": openWeightSheet(); break;
     case "weight-save": saveWeightSheet(); break;
     case "fav-quick-add": quickAddFavorite(actionEl.dataset.id); break;
+    case "open-share": openShareSheet(actionEl.dataset.date, actionEl.dataset.id); break;
+    case "do-share": doShare(actionEl); break;
     case "open-fav-manage": openFavManageSheet(); break;
     case "fav-remove": {
       Storage.removeFavorite(actionEl.dataset.id);
@@ -943,8 +945,12 @@ async function doAddLog() {
     Storage.addFavorite({ id: newEntryId(), name, meal, nutrients, thumb, items: r.items || [] });
   }
   buzz();
-  showToast("記録に追加しました");
   setView("home");
+  // 撮った直後がいちばん共有したい瞬間なので、ここから1手で開けるようにする
+  showToast("記録に追加しました", {
+    actionLabel: "共有",
+    onAction: () => openShareSheet(todayKey(), entry.id),
+  });
 }
 
 // ---------------- 記録の詳細(閲覧・編集・削除) ----------------
@@ -1030,6 +1036,9 @@ function openEntrySheet(dateKey, id) {
 
       <div class="actions" style="margin-top:20px;">
         <button type="button" class="btn btn-primary" data-action="entry-save" data-date="${dateKey}" data-id="${e.id}">変更を保存</button>
+        <button type="button" class="btn btn-tinted" data-action="open-share" data-date="${dateKey}" data-id="${e.id}">
+          ${iconHtml("share", 16)} この食事を共有
+        </button>
         <button type="button" class="btn btn-gray fav-toggle ${isFav ? "is-fav" : ""}" data-action="entry-fav" data-name="${escapeHtml(e.name)}" data-date="${dateKey}" data-id="${e.id}">
           <span class="fav-ic">${iconHtml(isFav ? "starFill" : "star", 16)}</span>
           <span class="fav-tx">${isFav ? "よく食べるものから外す" : "よく食べるものに追加"}</span>
@@ -1097,6 +1106,91 @@ function toggleEntryFavorite(btn) {
     buzz();
     showToast("よく食べるものに追加しました");
   }
+}
+
+// ---------------- 人に見せる(共有) ----------------
+//
+// サーバーを持たず、カード画像を端末で描いて端末の共有メニューへ渡すだけ。
+// どこにも送信しないので、費用も預かる責任も発生しない。
+
+function openShareSheet(dateKey, id) {
+  const e = findEntry(dateKey, id);
+  if (!e) return;
+  const targets = calcTargets(state.profile);
+
+  openSheet("この食事を共有", `
+    <div id="share-sheet" data-date="${dateKey}" data-id="${id}">
+      <p class="guide-lead">写真と栄養を1枚のカードにして、お使いのアプリへ渡します。
+      カードはこの端末の中で作られ、開発者のサーバーには送信されません。</p>
+
+      <div class="share-preview"><div class="spinner"></div></div>
+
+      <div class="group">
+        <div class="list">
+          <label class="check-row no-sep">
+            <input type="checkbox" id="sh-nutrients" checked>
+            <span>栄養の内訳(たんぱく質・脂質・炭水化物)も載せる</span>
+          </label>
+        </div>
+        <div class="group-note">外すと、料理名とエネルギーだけのカードになります。</div>
+      </div>
+
+      <div class="actions" style="margin-top:18px;">
+        <button type="button" class="btn btn-primary" data-action="do-share" data-date="${dateKey}" data-id="${id}">
+          ${iconHtml("share", 17)} <span class="sh-label">共有する</span>
+        </button>
+      </div>
+      <p class="footnote" style="text-align:center;margin-top:14px;">
+        いいねやコメントは、渡した先のアプリでやり取りされます。
+      </p>
+    </div>
+  `);
+
+  refreshSharePreview(e, targets);
+  // 内訳の有無を切り替えたら、見本を作り直す
+  const cb = $("#sh-nutrients");
+  if (cb) cb.addEventListener("change", () => refreshSharePreview(e, targets));
+}
+
+async function refreshSharePreview(entry, targets) {
+  const box = $(".share-preview");
+  if (!box) return;
+  const showNutrients = $("#sh-nutrients")?.checked !== false;
+  try {
+    const blob = await renderShareCard(entry, targets, { showNutrients });
+    if (!blob || !$(".share-preview")) return;
+    const url = URL.createObjectURL(blob);
+    box.innerHTML = `<img src="${url}" alt="共有するカードの見本">`;
+    $("img", box).addEventListener("load", () => URL.revokeObjectURL(url), { once: true });
+  } catch (e) {
+    box.innerHTML = `<p class="muted" style="padding:20px;text-align:center;">見本を作れませんでした</p>`;
+  }
+}
+
+async function doShare(btn) {
+  const e = findEntry(btn.dataset.date, btn.dataset.id);
+  if (!e) return;
+  const showNutrients = $("#sh-nutrients")?.checked !== false;
+  const label = $(".sh-label", btn);
+  btn.disabled = true;
+  if (label) label.textContent = "準備しています…";
+
+  const result = await shareEntry(e, calcTargets(state.profile), { showNutrients });
+
+  btn.disabled = false;
+  if (label) label.textContent = "共有する";
+
+  if (result === "shared") {
+    buzz();
+    closeSheet();
+    showToast("共有しました");
+  } else if (result === "downloaded") {
+    closeSheet();
+    showToast("カードを画像として保存しました");
+  } else if (result === "failed") {
+    showToast("カードを作れませんでした");
+  }
+  // "cancelled"(利用者が閉じた)は何も言わない
 }
 
 // ---------------- よく食べるもの ----------------

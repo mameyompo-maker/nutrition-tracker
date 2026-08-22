@@ -1,0 +1,17 @@
+# 開発用スクリプトが書き出すもの
+dev/screenshots/
+
+# エディタ・OS が作るもの
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.idea/
+
+# 依存は使わない方針だが、誤って入れたものを混ぜないための保険
+node_modules/
+package-lock.json
+
+# 一時ファイル
+*.tmp
+*.log

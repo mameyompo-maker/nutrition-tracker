@@ -1,0 +1,23 @@
+{
+  "name": "nutrition-tracker",
+  "version": "3.1.0",
+  "description": "食事の写真から栄養素を推定し、食事摂取基準と比べるPWA。サーバーもビルド工程も外部ライブラリも持たない",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node dev/serve.mjs",
+    "check": "node dev/check.mjs",
+    "test": "node dev/check.mjs && node dev/test.mjs",
+    "test:verbose": "node dev/check.mjs && node dev/test.mjs --verbose",
+    "shot": "node dev/shot.mjs",
+    "shot:dark": "node dev/shot.mjs --dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mameyompo-maker/nutrition-tracker.git"
+  }
+}

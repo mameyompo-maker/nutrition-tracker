@@ -1,0 +1,5 @@
+# 改行はリポジトリ内ではLFに統一する。
+# Windows と macOS の間で往復したときに、差分が全行になるのを防ぐ。
+* text=auto eol=lf
+
+*.png binary

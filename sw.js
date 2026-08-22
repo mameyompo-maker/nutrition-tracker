@@ -4,7 +4,7 @@
 // アセットを追加したら ASSETS と CACHE_NAME の版を必ず上げること。
 // 忘れると利用者の端末に古いファイルが残る。
 
-const CACHE_NAME = "nutriapp-shell-v7";
+const CACHE_NAME = "nutriapp-shell-v8";
 const ASSETS = [
   "./",
   "./index.html",
@@ -15,6 +15,7 @@ const ASSETS = [
   "./storage.js",
   "./charts.js",
   "./api.js",
+  "./share.js",
   "./app.js",
   "./manifest.json",
   "./icon-192.png",

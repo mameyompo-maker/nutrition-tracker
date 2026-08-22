@@ -1,0 +1,56 @@
+# push と Pull Request のたびに、静的チェックと操作テストを自動で走らせる。
+#
+# main への push は GitHub Pages への本番反映も兼ねるため、
+# ここが赤くなったときは「もう本番に出てしまっている」ことに注意する。
+# 大きな変更は Pull Request を経由させると、出す前に気づける。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 依存パッケージは無いので npm install は不要。
+      # ヘッドレステストに必要なブラウザだけ用意する。
+      - name: Chrome を用意する
+        uses: browser-actions/setup-chrome@v1
+        id: chrome
+        with:
+          chrome-version: stable
+
+      - name: 静的チェック(構文・参照・キャッシュ対象)
+        run: node dev/check.mjs
+
+      - name: 操作テスト
+        env:
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
+        run: node dev/test.mjs
+
+      # 失敗したときに画面を目で確かめられるようにしておく
+      - name: 画面を撮る
+        if: failure()
+        env:
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
+        run: node dev/shot.mjs || true
+
+      - name: スクリーンショットを残す
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: dev/screenshots/
+          if-no-files-found: ignore
