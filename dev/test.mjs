@@ -45,7 +45,7 @@ async function main() {
   try {
     // ---- 1) 操作のテスト ----
     const opWait = nextResult();
-    const { result: body } = await runChrome(
+    const { result: body, err } = await runChrome(
       `http://127.0.0.1:${port}/index.html?probe=1`,
       ["--window-size=560,2400"],
       { waitFor: opWait, timeoutMs: 120000 }
@@ -53,7 +53,13 @@ async function main() {
 
     if (!body) {
       console.error("テスト結果が返ってきませんでした。");
-      console.error("ページのスクリプトが最初の段階で止まっている可能性があります。");
+      console.error("ブラウザが起動できなかったか、ページのスクリプトが途中で止まっています。");
+      // 原因を追えるように、ブラウザ側の出力をそのまま見せる。
+      // これが無いと、CIで落ちたときに手がかりが何も残らない。
+      if (err && err.trim()) {
+        console.error("\n--- ブラウザの出力 ---");
+        console.error(err.trim().split("\n").slice(0, 25).join("\n"));
+      }
       process.exitCode = 1;
       return;
     }

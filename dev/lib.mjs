@@ -133,6 +133,10 @@ export async function runChrome(url, extraArgs = [], opts = {}) {
     "--disable-extensions", "--hide-scrollbars",
     `--user-data-dir=${profile}`,
     "--force-prefers-reduced-motion",
+    // Linux(CIのコンテナなど)ではサンドボックスが使えず、起動直後に落ちる。
+    // 共有メモリも小さいことがあるので、ディスクを使わせる。
+    // 手元のテスト専用の起動なので、安全性の面で問題はない。
+    ...(process.platform === "linux" ? ["--no-sandbox", "--disable-dev-shm-usage"] : []),
     ...extraArgs,
     url,
   ];
