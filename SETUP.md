@@ -171,6 +171,7 @@ https://mameyompo-maker.github.io/nutrition-tracker/ に反映されます。
 | 文書 | 中身 |
 |---|---|
 | `README.md` | アプリとしての説明。何ができるか、栄養の根拠、無料で使う手順 |
+| `CONTRIBUTING.md` | 変更の提案のしかた。**招待無しでも Pull request で参加できる** |
 | `HANDOVER.md` | **開発の勘どころ。** 壊してはいけない前提、実測で分かったこと、踏んだ罠 |
 | `PROMPT_v4.md` | 次にやる変更の仕様(配色の刷新、カレンダー、献立提案など) |
 | `COST_AND_SCALING.md` | どの機能に費用がかかるか、拡大したときの見通し |
