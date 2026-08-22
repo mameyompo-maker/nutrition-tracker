@@ -3,6 +3,8 @@
 // 画面の描画・状態管理・イベント処理
 // ---------------------------------------------------------------
 
+const APP_VERSION = "3.0";
+
 // 旧バージョン(Anthropic固定)のプロフィールを、複数AI対応の形に読み替える
 function loadProfile() {
   const p = Storage.getProfile();
@@ -22,6 +24,9 @@ const state = {
   capture: { file: null, dataUrl: null, analyzing: false, result: null, error: null, showManual: false, captureInfo: null, captureText: "" },
   showDetail: false,
   historyOpenDate: null,
+  historyQuery: "",
+  historyLimit: 30,
+  trendRange: 7,
   editingProfile: false,
   obStep: 0,
   sheet: null,
@@ -54,12 +59,29 @@ function escapeHtml(str) {
   }[c]));
 }
 
-function showToast(msg) {
+// 対応端末では、操作の節目に短い振動を返す(iOSでは無視されるだけ)
+function buzz(ms = 8) {
+  try { navigator.vibrate && navigator.vibrate(ms); } catch (e) { /* ignore */ }
+}
+
+// トースト。actionLabel を渡すと「元に戻す」のような操作ボタン付きになる
+function showToast(msg, opts = {}) {
   const el = $("#toast");
-  el.textContent = msg;
-  el.classList.add("show");
   clearTimeout(showToast._t);
-  showToast._t = setTimeout(() => el.classList.remove("show"), 2400);
+  if (opts.actionLabel) {
+    el.innerHTML = `<span>${escapeHtml(msg)}</span><button type="button" class="toast-action">${escapeHtml(opts.actionLabel)}</button>`;
+    el.classList.add("has-action");
+    const btn = $(".toast-action", el);
+    btn.addEventListener("click", () => {
+      el.classList.remove("show", "has-action");
+      if (opts.onAction) opts.onAction();
+    }, { once: true });
+  } else {
+    el.textContent = msg;
+    el.classList.remove("has-action");
+  }
+  el.classList.add("show");
+  showToast._t = setTimeout(() => el.classList.remove("show", "has-action"), opts.duration || (opts.actionLabel ? 5000 : 2400));
 }
 
 const CAPTURE_INITIAL = () => ({
@@ -67,13 +89,43 @@ const CAPTURE_INITIAL = () => ({
   captureInfo: null, captureText: "",
 });
 
+// ---------------- 食事の区分 ----------------
+
+const MEALS = {
+  breakfast: { label: "朝食", icon: "breakfast" },
+  lunch:     { label: "昼食", icon: "lunch" },
+  snack:     { label: "間食", icon: "snack" },
+  dinner:    { label: "夕食", icon: "dinner" },
+};
+const MEAL_ORDER = ["breakfast", "lunch", "snack", "dinner"];
+
+// 時刻からの推測。あくまで初期値で、記録時にいつでも変えられる
+function guessMeal(hour) {
+  if (hour >= 4 && hour < 11) return "breakfast";
+  if (hour >= 11 && hour < 15) return "lunch";
+  if (hour >= 15 && hour < 18) return "snack";
+  return "dinner";
+}
+
+function nowTimeStr() {
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+}
+
+function newEntryId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 // ---------------- 初期化・ルーティング ----------------
 
-const TAB_ICONS = { home: "home", capture: "camera", history: "calendar", settings: "settings" };
+const TAB_ICONS = { home: "home", capture: "camera", trends: "trend", history: "calendar", settings: "settings" };
+const VIEW_TITLES = { home: "今日", capture: "記録", trends: "トレンド", history: "履歴", settings: "設定" };
+const ALL_VIEWS = ["home", "capture", "trends", "history", "settings"];
 
 function init() {
-  const wanted = new URLSearchParams(location.search).get("view");
-  state.view = state.profile ? (["home", "capture", "history", "settings"].includes(wanted) ? wanted : "home") : "onboarding";
+  const params = new URLSearchParams(location.search);
+  const wanted = params.get("view");
+  state.view = state.profile ? (ALL_VIEWS.includes(wanted) ? wanted : "home") : "onboarding";
 
   $$(".tab-btn").forEach((btn) => {
     const wrap = $(".ic-wrap", btn);
@@ -81,6 +133,11 @@ function init() {
   });
 
   render();
+
+  // アプリのショートカット(アイコン長押し)から体重記録を直接開く
+  if (state.profile && params.get("sheet") === "weight") {
+    setTimeout(openWeightSheet, 80);
+  }
 
   document.body.addEventListener("click", onBodyClick);
   document.body.addEventListener("change", onBodyChange);
@@ -91,20 +148,37 @@ function init() {
     if (e.key === "Escape" && state.sheet) closeSheet();
   });
 
+  // スクロールで小さなタイトルバーを出す(ネイティブのナビゲーションバーの挙動)
+  let navTick = false;
+  window.addEventListener("scroll", () => {
+    if (navTick) return;
+    navTick = true;
+    requestAnimationFrame(() => {
+      navTick = false;
+      $("#small-nav").classList.toggle("visible", window.scrollY > 46 && state.view !== "onboarding");
+    });
+  }, { passive: true });
+
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").catch(() => {});
   }
+
+  // 過去に保存した大きなサムネイルを、裏で小さく作り直す(容量対策)
+  setTimeout(migrateThumbs, 1600);
 }
 
 function setView(view) {
   closeSheet();
+  const changed = state.view !== view;
   state.view = view;
   if (view === "capture") state.capture = CAPTURE_INITIAL();
-  render();
+  if (view === "history") { state.historyQuery = ""; state.historyLimit = 30; }
+  if (changed) buzz(4);
+  render(changed);
   window.scrollTo(0, 0);
 }
 
-function render() {
+function render(animate = false) {
   const app = $("#app");
   const tabbar = $("#tabbar");
   const showTabs = state.view !== "onboarding";
@@ -116,13 +190,24 @@ function render() {
     btn.setAttribute("aria-current", active ? "page" : "false");
   });
 
+  const title = $("#small-nav-title");
+  if (title) title.textContent = VIEW_TITLES[state.view] || "";
+  $("#small-nav").classList.toggle("visible", window.scrollY > 46 && showTabs);
+
   switch (state.view) {
     case "onboarding": app.innerHTML = renderOnboarding(); break;
     case "home": app.innerHTML = renderHome(); break;
     case "capture": app.innerHTML = renderCapture(); break;
+    case "trends": app.innerHTML = renderTrends(); break;
     case "history": app.innerHTML = renderHistory(); break;
     case "settings": app.innerHTML = renderSettings(); break;
     default: app.innerHTML = renderHome();
+  }
+
+  if (animate) {
+    app.classList.remove("view-anim");
+    void app.offsetWidth;
+    app.classList.add("view-anim");
   }
 
   // 設定フォームが出ているときは、選択中のAIサービスに合わせて中身を整える
@@ -133,7 +218,7 @@ function render() {
   }
 }
 
-// ---------------- シート(手順書などを重ねて開く) ----------------
+// ---------------- シート(重ねて開く画面) ----------------
 
 function openSheet(title, bodyHtml) {
   state.sheet = { title, body: bodyHtml };
@@ -167,6 +252,42 @@ function renderSheet() {
       <div class="sheet-body">${state.sheet.body}</div>
     </div>
   `;
+  attachSheetDrag($(".sheet", root));
+}
+
+// シートをつかんで下に払うと閉じる(ネイティブのシートと同じ操作感)
+function attachSheetDrag(sheet) {
+  if (!sheet || !("ontouchstart" in window)) return;
+  const head = $(".sheet-head", sheet);
+  const grabber = $(".sheet-grabber", sheet);
+  let startY = null;
+  let delta = 0;
+  const onStart = (e) => {
+    startY = e.touches[0].clientY;
+    delta = 0;
+    sheet.style.transition = "none";
+  };
+  const onMove = (e) => {
+    if (startY == null) return;
+    delta = Math.max(0, e.touches[0].clientY - startY);
+    sheet.style.transform = `translateY(${delta}px)`;
+  };
+  const onEnd = () => {
+    if (startY == null) return;
+    sheet.style.transition = "";
+    if (delta > 90) {
+      closeSheet();
+    } else {
+      sheet.style.transform = "";
+    }
+    startY = null;
+  };
+  [head, grabber].forEach((el) => {
+    if (!el) return;
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchmove", onMove, { passive: true });
+    el.addEventListener("touchend", onEnd, { passive: true });
+  });
 }
 
 // ---------------- イベントハンドラ ----------------
@@ -193,16 +314,39 @@ function onBodyClick(e) {
     case "copy-prompt": doCopyPrompt(); break;
     case "parse-manual": doParseManual(); break;
     case "add-log": doAddLog(); break;
-    case "delete-log": doDeleteLog(actionEl.dataset.date, actionEl.dataset.id); break;
     case "toggle-detail": state.showDetail = !state.showDetail; render(); break;
     case "ob-next": gotoObStep(state.obStep + 1); break;
     case "ob-back": gotoObStep(state.obStep - 1); break;
-    case "toggle-history-day": {
-      const d = actionEl.dataset.date;
-      state.historyOpenDate = state.historyOpenDate === d ? null : d;
+    case "goto-trends": setView("trends"); break;
+    case "set-trend-range": {
+      state.trendRange = Number(actionEl.dataset.range) || 7;
       render();
       break;
     }
+    case "toggle-history-day": {
+      const d = actionEl.dataset.date;
+      state.historyOpenDate = state.historyOpenDate === d ? null : d;
+      updateHistoryResults();
+      break;
+    }
+    case "history-more": state.historyLimit += 30; updateHistoryResults(); break;
+    case "open-entry": openEntrySheet(actionEl.dataset.date, actionEl.dataset.id); break;
+    case "entry-save": saveEntrySheet(actionEl.dataset.date, actionEl.dataset.id); break;
+    case "entry-delete": deleteEntry(actionEl.dataset.date, actionEl.dataset.id); break;
+    case "entry-fav": toggleEntryFavorite(actionEl); break;
+    case "open-manual-add": openManualAddSheet(); break;
+    case "manual-add-save": saveManualAdd(); break;
+    case "open-weight": openWeightSheet(); break;
+    case "weight-save": saveWeightSheet(); break;
+    case "fav-quick-add": quickAddFavorite(actionEl.dataset.id); break;
+    case "open-fav-manage": openFavManageSheet(); break;
+    case "fav-remove": {
+      Storage.removeFavorite(actionEl.dataset.id);
+      openFavManageSheet();
+      break;
+    }
+    case "export-data": doExportData(); break;
+    case "import-data": $("#file-import").click(); break;
     case "edit-profile": state.editingProfile = true; render(); window.scrollTo(0, 0); break;
     case "cancel-edit": state.editingProfile = false; clearFormScratch(); render(); break;
     case "clear-logs": {
@@ -228,8 +372,19 @@ function onBodyChange(e) {
     handleFileSelected(e.target.files[0]);
     return;
   }
+  if (e.target.id === "file-import") {
+    handleImportFile(e.target.files[0]);
+    e.target.value = "";
+    return;
+  }
   if (e.target.dataset && e.target.dataset.role === "provider-select") {
     onProviderChange(e.target);
+    return;
+  }
+  // 食事区分などのセグメント選択の見た目を切り替える
+  if (e.target.matches(".segmented input")) {
+    const seg = e.target.closest(".segmented");
+    $$("label.seg", seg).forEach((l) => l.classList.toggle("on", $("input", l).checked));
     return;
   }
   if (e.target.name === "sex" || e.target.name === "age" || e.target.name === "activity") {
@@ -246,6 +401,11 @@ function onBodyInput(e) {
     if (out) { out.textContent = "キーとモデル名が正しいか確かめます"; out.style.color = ""; }
   }
   if (name === "age") updateProfileFormUi(e.target.closest("form"));
+  if (e.target.id === "history-search") {
+    state.historyQuery = e.target.value;
+    state.historyLimit = 30;
+    updateHistoryResults();
+  }
 }
 
 // 性別・年齢・活動レベルに応じて、フォームの補足表示を切り替える
@@ -364,6 +524,7 @@ function submitProfileForm(form, isOnboarding) {
   state.editingProfile = false;
   clearFormScratch();
   Storage.saveProfile(p);
+  buzz();
   showToast(isOnboarding ? "準備ができました" : "変更を保存しました");
   setView("home");
 }
@@ -518,6 +679,7 @@ async function doTestConnection(rowEl) {
   try {
     await testAiConnection(probe);
     if (out) { out.textContent = "接続できました"; out.style.color = "var(--accent)"; }
+    buzz();
     setConnectionVerified(true);
   } catch (e) {
     if (out) { out.textContent = e.message || "接続できませんでした"; out.style.color = "var(--danger)"; }
@@ -619,11 +781,12 @@ function openAboutSheet() {
   openSheet("このアプリについて", `
     <p class="guide-lead">写真から栄養を読み取り、あなたに必要な量と比べるためのアプリです。専用のサーバーを持たず、すべてこの端末の中で完結します。</p>
     <div class="guide-notes">
-      <div class="guide-note">${iconHtml("database", 15)}<span>食事の記録・プロフィール・APIキーは、この端末のブラウザ内(localStorage)にのみ保存されます。開発者のサーバーには送信されません。端末やブラウザを変えると引き継がれません。</span></div>
+      <div class="guide-note">${iconHtml("database", 15)}<span>食事の記録・プロフィール・APIキーは、この端末のブラウザ内(localStorage)にのみ保存されます。開発者のサーバーには送信されません。端末を変えるときは、設定の「データを書き出す」で引き継げます。</span></div>
       <div class="guide-note">${iconHtml("sparkle", 15)}<span>写真解析のときだけ、写真とAPIキーが、あなたが選んだAIサービスに直接送信されます。経由するサーバーはありません。</span></div>
       <div class="guide-note warn">${iconHtml("shield", 15)}<span>APIキーはブラウザ内に保存されるため、その端末を使える人には見える形になります。共有の端末では、使い終わったらキーを消してください。</span></div>
       <div class="guide-note">${iconHtml("info", 15)}<span>表示される1日の必要量やAIの推定値は一般的な目安であり、医学的な助言ではありません。妊娠・授乳中の方、成長期のお子様、持病のある方は、医師や管理栄養士にご相談ください。18歳以上の方を対象としています。</span></div>
     </div>
+    <p class="footnote" style="text-align:center;margin-top:20px;">バージョン ${APP_VERSION}</p>
   `);
 }
 
@@ -670,6 +833,7 @@ async function doAnalyze() {
       profile: state.profile,
       captureText: state.capture.captureText,
     });
+    buzz();
   } catch (e) {
     state.capture.error = e.message || "解析中にエラーが発生しました";
   } finally {
@@ -699,7 +863,54 @@ function doParseManual() {
   render();
 }
 
-function doAddLog() {
+// 記録用の小さなサムネイルを作る(容量を使い切らないための要)
+function makeThumb(dataUrl, maxDim = 360, quality = 0.72) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onerror = () => resolve(null);
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        if (width > height) { height = Math.round((height * maxDim) / width); width = maxDim; }
+        else { width = Math.round((width * maxDim) / height); height = maxDim; }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.src = dataUrl;
+  });
+}
+
+// 以前の版が保存した大きなサムネイルを、裏で小さく作り直す
+async function migrateThumbs() {
+  const all = Storage.getAllLogs();
+  let changed = false;
+  for (const d of Object.keys(all)) {
+    for (const e of all[d]) {
+      if (e.thumb && e.thumb.length > 90000) {
+        const small = await makeThumb(e.thumb);
+        if (small && small.length < e.thumb.length) {
+          e.thumb = small;
+          changed = true;
+        }
+      }
+    }
+  }
+  if (changed) Storage.setAllLogs(all);
+}
+
+function notifySaveResult(status) {
+  if (status === "shed") {
+    showToast("空き容量が少ないため、古い記録の写真を一部手放しました");
+  } else if (status === "fail") {
+    showToast("保存できませんでした。ブラウザの空き容量をご確認ください");
+  }
+}
+
+async function doAddLog() {
   const form = $("#result-form");
   const fd = new FormData(form);
   const nutrients = {};
@@ -708,26 +919,450 @@ function doAddLog() {
   });
   const name = (fd.get("mealName") || "食事").trim() || "食事";
   const note = (fd.get("memo") || "").trim();
+  const meal = MEALS[fd.get("meal")] ? fd.get("meal") : guessMeal(new Date().getHours());
+  const r = state.capture.result || {};
 
-  const now = new Date();
+  const thumb = state.capture.dataUrl ? await makeThumb(state.capture.dataUrl) : null;
   const entry = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    time: `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`,
+    id: newEntryId(),
+    time: nowTimeStr(),
     name,
-    items: state.capture.result?.items || [],
+    meal,
+    items: r.items || [],
     nutrients,
     note,
-    thumb: state.capture.dataUrl,
+    thumb,
+    portion: r.portion || null,
+    source: r.source || null,
+    confidence: r.confidence || null,
   };
-  Storage.addLog(todayKey(), entry);
+  const status = Storage.addLog(todayKey(), entry);
+  notifySaveResult(status);
+
+  if (fd.get("saveFav")) {
+    Storage.addFavorite({ id: newEntryId(), name, meal, nutrients, thumb, items: r.items || [] });
+  }
+  buzz();
   showToast("記録に追加しました");
   setView("home");
 }
 
-function doDeleteLog(dateKey, id) {
-  Storage.deleteLog(dateKey, id);
-  showToast("記録を削除しました");
+// ---------------- 記録の詳細(閲覧・編集・削除) ----------------
+
+function segmentedHtml(name, selected) {
+  return `
+    <div class="segmented" role="radiogroup" aria-label="食事の区分">
+      ${MEAL_ORDER.map((m) => `
+        <label class="seg ${selected === m ? "on" : ""}">
+          <input type="radio" name="${name}" value="${m}" ${selected === m ? "checked" : ""}>
+          ${MEALS[m].label}
+        </label>`).join("")}
+    </div>
+  `;
+}
+
+function findEntry(dateKey, id) {
+  return Storage.getLogsForDate(dateKey).find((e) => e.id === id) || null;
+}
+
+function openEntrySheet(dateKey, id) {
+  const e = findEntry(dateKey, id);
+  if (!e) return;
+  const meal = MEALS[e.meal] ? e.meal : guessMeal(parseInt(e.time, 10) || 12);
+  const isFav = !!Storage.findFavoriteByName(e.name);
+  const portion = e.portion || {};
+  const mainKeys = ["calories", "protein", "fat", "carb"];
+  const restKeys = Object.keys(NUTRIENT_META).filter((k) => !mainKeys.includes(k));
+
+  const numRow = (k) => `
+    <div class="field-row">
+      <label class="field-label" for="ee-${k}" style="display:flex;align-items:center;gap:9px;min-width:130px;font-size:15px;">
+        ${nutrientIconHtml(k)} ${NUTRIENT_META[k].label}
+      </label>
+      <input type="number" step="0.1" id="ee-${k}" name="${k}" value="${e.nutrients?.[k] ?? 0}" inputmode="decimal">
+      <span class="field-unit">${NUTRIENT_META[k].unit}</span>
+    </div>`;
+
+  openSheet(formatDateLabel(dateKey), `
+    <div id="entry-edit" data-date="${dateKey}" data-id="${e.id}">
+      ${e.thumb ? `<img class="entry-photo" src="${e.thumb}" alt="" decoding="async">` : ""}
+
+      <div class="group">
+        <div class="list">
+          <div class="field-stack">
+            <div class="field-caption"><span>名前</span></div>
+            <input type="text" id="ee-name" value="${escapeHtml(e.name)}">
+          </div>
+          <div class="field-stack">
+            <div class="field-caption"><span>区分</span></div>
+            ${segmentedHtml("ee-meal", meal)}
+          </div>
+          <div class="field-row">
+            <label class="field-label" for="ee-time">時刻</label>
+            <input type="time" id="ee-time" value="${escapeHtml(e.time || "12:00")}">
+          </div>
+          <div class="field-stack">
+            <div class="field-caption"><span>メモ</span></div>
+            <input type="text" id="ee-memo" value="${escapeHtml(e.note || "")}" placeholder="外食・自炊 など">
+          </div>
+        </div>
+      </div>
+
+      ${portion.totalGrams || portion.basis ? `
+      <div class="group">
+        <div class="group-title">量の判断</div>
+        <div class="list">
+          ${portion.totalGrams ? `<div class="row"><span class="row-main"><span class="row-label" style="font-size:15px;">推定した合計重量</span></span><span class="row-value" style="font-size:15px;">${portion.totalGrams} g</span></div>` : ""}
+          ${portion.basis ? `<div class="row"><span class="row-main"><span class="row-label" style="font-size:15px;">判断のしかた</span><span class="row-sub">${escapeHtml(portion.basis)}</span></span></div>` : ""}
+        </div>
+      </div>` : ""}
+
+      <div class="group">
+        <div class="group-title">栄養素</div>
+        <div class="list">
+          ${mainKeys.map(numRow).join("")}
+        </div>
+        <details class="more-nutrients">
+          <summary>すべての栄養素を編集</summary>
+          <div class="list" style="margin-top:10px;">${restKeys.map(numRow).join("")}</div>
+        </details>
+      </div>
+
+      <div class="actions" style="margin-top:20px;">
+        <button type="button" class="btn btn-primary" data-action="entry-save" data-date="${dateKey}" data-id="${e.id}">変更を保存</button>
+        <button type="button" class="btn btn-gray fav-toggle ${isFav ? "is-fav" : ""}" data-action="entry-fav" data-name="${escapeHtml(e.name)}" data-date="${dateKey}" data-id="${e.id}">
+          <span class="fav-ic">${iconHtml(isFav ? "starFill" : "star", 16)}</span>
+          <span class="fav-tx">${isFav ? "よく食べるものから外す" : "よく食べるものに追加"}</span>
+        </button>
+        <button type="button" class="btn btn-danger" data-action="entry-delete" data-date="${dateKey}" data-id="${e.id}">この記録を削除</button>
+      </div>
+    </div>
+  `);
+}
+
+function saveEntrySheet(dateKey, id) {
+  const root = $("#entry-edit");
+  if (!root) return;
+  const nutrients = {};
+  Object.keys(NUTRIENT_META).forEach((k) => {
+    const input = $(`#ee-${k}`, root);
+    nutrients[k] = Math.round((parseFloat(input?.value) || 0) * 10) / 10;
+  });
+  const patch = {
+    name: ($("#ee-name", root)?.value || "食事").trim() || "食事",
+    meal: $("input[name=ee-meal]:checked", root)?.value || "lunch",
+    time: $("#ee-time", root)?.value || "12:00",
+    note: ($("#ee-memo", root)?.value || "").trim(),
+    nutrients,
+  };
+  const status = Storage.updateLog(dateKey, id, patch);
+  notifySaveResult(status);
+  buzz();
+  closeSheet();
+  showToast("変更を保存しました");
   render();
+}
+
+function deleteEntry(dateKey, id) {
+  const removed = Storage.deleteLog(dateKey, id);
+  closeSheet();
+  render();
+  if (!removed) return;
+  buzz(12);
+  showToast("記録を削除しました", {
+    actionLabel: "元に戻す",
+    onAction: () => {
+      Storage.restoreLog(dateKey, removed.entry, removed.index);
+      render();
+    },
+  });
+}
+
+function toggleEntryFavorite(btn) {
+  const name = btn.dataset.name;
+  const existing = Storage.findFavoriteByName(name);
+  if (existing) {
+    Storage.removeFavorite(existing.id);
+    btn.classList.remove("is-fav");
+    $(".fav-ic", btn).innerHTML = iconHtml("star", 16);
+    $(".fav-tx", btn).textContent = "よく食べるものに追加";
+    showToast("よく食べるものから外しました");
+  } else {
+    const e = findEntry(btn.dataset.date, btn.dataset.id);
+    if (!e) return;
+    Storage.addFavorite({ id: newEntryId(), name: e.name, meal: e.meal, nutrients: e.nutrients, thumb: e.thumb, items: e.items || [] });
+    btn.classList.add("is-fav");
+    $(".fav-ic", btn).innerHTML = iconHtml("starFill", 16);
+    $(".fav-tx", btn).textContent = "よく食べるものから外す";
+    buzz();
+    showToast("よく食べるものに追加しました");
+  }
+}
+
+// ---------------- よく食べるもの ----------------
+
+function quickAddFavorite(favId) {
+  const fav = Storage.getFavorites().find((f) => f.id === favId);
+  if (!fav) return;
+  const entry = {
+    id: newEntryId(),
+    time: nowTimeStr(),
+    name: fav.name,
+    meal: guessMeal(new Date().getHours()),
+    items: fav.items || [],
+    nutrients: fav.nutrients,
+    note: "",
+    thumb: fav.thumb || null,
+  };
+  const status = Storage.addLog(todayKey(), entry);
+  notifySaveResult(status);
+  buzz();
+  render();
+  showToast(`「${fav.name}」を記録しました`, {
+    actionLabel: "元に戻す",
+    onAction: () => {
+      Storage.deleteLog(todayKey(), entry.id);
+      render();
+    },
+  });
+}
+
+function openFavManageSheet() {
+  const favs = Storage.getFavorites();
+  const rows = favs.length
+    ? favs.map((f) => `
+        <div class="row with-thumb">
+          ${f.thumb ? `<img class="thumb" src="${f.thumb}" alt="" decoding="async">` : `<span class="thumb">${iconHtml("meal", 18)}</span>`}
+          <span class="row-main">
+            <span class="row-label ellipsis">${escapeHtml(f.name)}</span>
+            <span class="row-sub">${Math.round(f.nutrients?.calories || 0)} kcal</span>
+          </span>
+          <button class="icon-btn" data-action="fav-remove" data-id="${f.id}" aria-label="削除">${iconHtml("close", 13)}</button>
+        </div>`).join("")
+    : `<div class="empty">${iconHtml("star", 30)}<div class="title">まだ登録がありません</div><div class="body">解析結果や記録の詳細から「よく食べるもの」に追加すると、写真なしで1タップで記録できるようになります。</div></div>`;
+  openSheet("よく食べるもの", `<div class="list">${rows}</div>`);
+}
+
+// ---------------- 写真なしの手入力 ----------------
+
+function openManualAddSheet() {
+  const meal = guessMeal(new Date().getHours());
+  const fields = [
+    ["calories", "エネルギー", "kcal"], ["protein", "たんぱく質", "g"],
+    ["fat", "脂質", "g"], ["carb", "炭水化物", "g"], ["salt", "食塩相当量", "g"],
+  ];
+  openSheet("写真なしで記録", `
+    <div id="manual-add">
+      <div class="group">
+        <div class="list">
+          <div class="field-stack">
+            <div class="field-caption"><span>名前</span></div>
+            <input type="text" id="ma-name" placeholder="例: おにぎり(鮭)・コーヒー">
+          </div>
+          <div class="field-stack">
+            <div class="field-caption"><span>区分</span></div>
+            ${segmentedHtml("ma-meal", meal)}
+          </div>
+          ${fields.map(([k, label, unit]) => `
+            <div class="field-row">
+              <label class="field-label" for="ma-${k}" style="display:flex;align-items:center;gap:9px;min-width:130px;font-size:15px;">${nutrientIconHtml(k)} ${label}</label>
+              <input type="number" step="0.1" id="ma-${k}" inputmode="decimal" placeholder="0">
+              <span class="field-unit">${unit}</span>
+            </div>`).join("")}
+        </div>
+        <div class="group-note">分かる項目だけで構いません。あとから記録を開けば、すべての栄養素を直せます。</div>
+      </div>
+      <div class="actions" style="margin-top:16px;">
+        <button type="button" class="btn btn-primary" data-action="manual-add-save">${iconHtml("plus", 16)} 記録に追加</button>
+      </div>
+    </div>
+  `);
+}
+
+function saveManualAdd() {
+  const root = $("#manual-add");
+  if (!root) return;
+  const name = ($("#ma-name", root)?.value || "").trim();
+  if (!name) { showToast("名前を入力してください"); return; }
+  const nutrients = {};
+  Object.keys(NUTRIENT_META).forEach((k) => {
+    const input = $(`#ma-${k}`, root);
+    nutrients[k] = input ? Math.round((parseFloat(input.value) || 0) * 10) / 10 : 0;
+  });
+  const entry = {
+    id: newEntryId(),
+    time: nowTimeStr(),
+    name,
+    meal: $("input[name=ma-meal]:checked", root)?.value || guessMeal(new Date().getHours()),
+    items: [],
+    nutrients,
+    note: "",
+    thumb: null,
+  };
+  const status = Storage.addLog(todayKey(), entry);
+  notifySaveResult(status);
+  buzz();
+  closeSheet();
+  render();
+  showToast("記録に追加しました");
+}
+
+// ---------------- 体重 ----------------
+
+function latestWeight() {
+  const w = Storage.getWeights();
+  const keys = Object.keys(w).sort();
+  return keys.length ? w[keys[keys.length - 1]] : state.profile?.weight || null;
+}
+
+function openWeightSheet() {
+  const current = latestWeight();
+  openSheet("体重を記録", `
+    <div id="weight-sheet">
+      <div class="weight-input-wrap">
+        <input type="number" id="ws-kg" step="0.1" min="25" max="300" inputmode="decimal" value="${current ?? ""}" placeholder="60.0">
+        <span class="weight-unit">kg</span>
+      </div>
+      <label class="check-row">
+        <input type="checkbox" id="ws-update-profile" checked>
+        <span>プロフィールの体重も更新する(1日の目標に反映されます)</span>
+      </label>
+      <div class="actions" style="margin-top:18px;">
+        <button type="button" class="btn btn-primary" data-action="weight-save">保存する</button>
+      </div>
+      <p class="footnote" style="text-align:center;margin-top:14px;">${formatDateLabel(todayKey())} の記録として保存します。同じ日に保存し直すと上書きされます。</p>
+    </div>
+  `);
+  setTimeout(() => { const i = $("#ws-kg"); if (i) { i.focus(); i.select(); } }, 120);
+}
+
+function saveWeightSheet() {
+  const v = parseFloat($("#ws-kg")?.value);
+  if (!Number.isFinite(v) || v < 25 || v > 300) { showToast("体重を正しく入力してください(25〜300kg)"); return; }
+  const kg = Math.round(v * 10) / 10;
+  Storage.setWeight(todayKey(), kg);
+  if ($("#ws-update-profile")?.checked && state.profile) {
+    state.profile.weight = kg;
+    Storage.saveProfile(state.profile);
+  }
+  buzz();
+  closeSheet();
+  render();
+  showToast(`体重 ${kg} kg を記録しました`);
+}
+
+// ---------------- データの書き出し・読み込み ----------------
+
+function doExportData() {
+  const profile = state.profile ? Object.assign({}, state.profile) : null;
+  if (profile) delete profile.apiKeys; // キーは安全のため書き出さない
+  const payload = {
+    app: "nutrition-tracker-backup",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    profile,
+    logs: Storage.getAllLogs(),
+    weights: Storage.getWeights(),
+    favorites: Storage.getFavorites(),
+  };
+  const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `nutrition-backup-${todayKey()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  showToast("バックアップを書き出しました(APIキーは含まれません)");
+}
+
+function handleImportFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onerror = () => showToast("ファイルを読み込めませんでした");
+  reader.onload = () => {
+    let data;
+    try {
+      data = JSON.parse(reader.result);
+    } catch (e) {
+      showToast("このファイルは読み込めません(JSONではありません)");
+      return;
+    }
+    if (data?.app !== "nutrition-tracker-backup" || !data.logs) {
+      showToast("このアプリのバックアップファイルではないようです");
+      return;
+    }
+    const logDays = Object.keys(data.logs || {}).length;
+    const nEntries = Object.values(data.logs || {}).reduce((s, l) => s + (Array.isArray(l) ? l.length : 0), 0);
+    const nWeights = Object.keys(data.weights || {}).length;
+    const nFavs = (data.favorites || []).length;
+    if (!confirm(`バックアップを読み込みます。\n食事の記録 ${nEntries}件(${logDays}日分)・体重 ${nWeights}件・よく食べるもの ${nFavs}件\n\n今の記録に統合されます(同じ記録は重複しません)。よろしいですか？`)) return;
+
+    // 記録: 日付ごとに統合し、同じIDは取り込まない
+    const all = Storage.getAllLogs();
+    Object.entries(data.logs || {}).forEach(([d, entries]) => {
+      if (!Array.isArray(entries)) return;
+      if (!all[d]) all[d] = [];
+      const ids = new Set(all[d].map((e) => e.id));
+      entries.forEach((e) => {
+        if (e && e.id && e.nutrients && !ids.has(e.id)) all[d].push(e);
+      });
+      all[d].sort((a, b) => ((a.time || "") < (b.time || "") ? 1 : -1));
+    });
+    const status = Storage.setAllLogs(all);
+
+    // 体重: 同じ日は読み込んだ値で上書き
+    Object.entries(data.weights || {}).forEach(([k, v]) => {
+      const kg = Number(v);
+      if (Number.isFinite(kg) && kg >= 25 && kg <= 300) Storage.setWeight(k, kg);
+    });
+
+    // よく食べるもの: 名前で重複を除いて統合
+    const favs = Storage.getFavorites();
+    const names = new Set(favs.map((f) => f.name));
+    (data.favorites || []).forEach((f) => {
+      if (f && f.name && f.nutrients && !names.has(f.name)) favs.push(f);
+    });
+    Storage.saveFavorites(favs.slice(0, 30));
+
+    // プロフィール: いま無い場合のみ取り込む(APIキーは含まれていない)
+    if (!state.profile && data.profile) {
+      state.profile = Object.assign({ apiKeys: {}, models: {}, baseUrls: {}, provider: DEFAULT_PROVIDER }, data.profile);
+      Storage.saveProfile(state.profile);
+      state.view = "home";
+    }
+
+    notifySaveResult(status);
+    render();
+    showToast("バックアップを読み込みました");
+  };
+  reader.readAsText(file);
+}
+
+// ---------------- 集計ヘルパー ----------------
+
+// 直近n日の日ごとの合計(古い→新しい)
+function dailySums(n) {
+  const all = Storage.getAllLogs();
+  return lastNDates(n).map((key) => {
+    const entries = all[key] || [];
+    return { key, entries, count: entries.length, sum: sumNutrients(entries) };
+  });
+}
+
+// 連続記録日数。今日まだ記録がなくても、昨日まで続いていれば継続として数える
+function streakDays() {
+  const all = Storage.getAllLogs();
+  let streak = 0;
+  const base = new Date();
+  for (let i = 0; i < 3660; i++) {
+    const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() - i);
+    const has = (all[dateKeyOf(d)] || []).length > 0;
+    if (has) streak++;
+    else if (i === 0) continue; // 今日はまだこれから
+    else break;
+  }
+  return streak;
 }
 
 // ---------------- 部品 ----------------
@@ -886,6 +1521,10 @@ function renderOnboarding() {
             <span><span class="ft">あなたのAIにつなぐ</span><span class="fd">お使いのAIサービスのAPIキーを登録して使います。無料で使えるものも選べます。</span></span>
           </div>
           <div class="feature">
+            <span class="fi">${iconHtml("trend", 20)}</span>
+            <span><span class="ft">傾向まで見える</span><span class="fd">日々の記録から、エネルギー・栄養バランス・体重の推移をまとめて振り返れます。</span></span>
+          </div>
+          <div class="feature">
             <span class="fi">${iconHtml("database", 20)}</span>
             <span><span class="ft">記録は端末の中だけ</span><span class="fd">食事の記録は、この端末のブラウザにのみ保存されます。開発者には送信されません。</span></span>
           </div>
@@ -935,14 +1574,29 @@ function ringHtml(consumed, target) {
   return `
     <div class="ring ${over ? "over" : ""}">
       <svg viewBox="0 0 196 196" aria-hidden="true">
-        <circle class="track" cx="98" cy="98" r="${R}" fill="none" stroke-width="14"/>
-        <circle class="fill" cx="98" cy="98" r="${R}" fill="none" stroke-width="14"
+        <circle class="track" cx="98" cy="98" r="${R}" fill="none" stroke-width="13"/>
+        <circle class="fill" cx="98" cy="98" r="${R}" fill="none" stroke-width="13"
                 stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${offset.toFixed(1)}"/>
       </svg>
       <div class="ring-center">
         <span class="value">${Math.round(consumed)}</span>
-        <span class="unit">KCAL</span>
+        <span class="unit">/ ${target} kcal</span>
       </div>
+    </div>
+  `;
+}
+
+// ヒーローカードの右側: PFCの3行(データカラーで塗る)
+function macroRowHtml(key, consumed, target) {
+  const meta = NUTRIENT_META[key];
+  const pct = target > 0 ? Math.min(100, Math.round((consumed / target) * 100)) : 0;
+  return `
+    <div class="macro">
+      <div class="macro-head">
+        <span class="macro-name"><i class="dot c-${key}"></i>${meta.label}</span>
+        <span class="macro-val tnum">${Math.round(consumed)}<small> / ${target}${meta.unit}</small></span>
+      </div>
+      <div class="bar slim c-${key}"><span style="width:${pct}%"></span></div>
     </div>
   `;
 }
@@ -968,18 +1622,44 @@ function nutrientRow(key, consumed, target) {
 
 function mealRowHtml(entry, dateKey) {
   const thumb = entry.thumb
-    ? `<img class="thumb" src="${entry.thumb}" alt="">`
-    : `<span class="thumb">${iconHtml("meal", 18)}</span>`;
+    ? `<img class="thumb" src="${entry.thumb}" alt="" decoding="async">`
+    : `<span class="thumb">${iconHtml(MEALS[entry.meal]?.icon || "meal", 18)}</span>`;
   return `
-    <div class="row with-thumb">
+    <button type="button" class="row with-thumb tappable" data-action="open-entry" data-date="${dateKey}" data-id="${entry.id}">
       ${thumb}
       <span class="row-main">
-        <span class="row-label" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(entry.name)}</span>
+        <span class="row-label ellipsis">${escapeHtml(entry.name)}</span>
         <span class="row-sub">${entry.time} ・ ${Math.round(entry.nutrients.calories)} kcal</span>
       </span>
-      <button class="icon-btn" data-action="delete-log" data-date="${dateKey}" data-id="${entry.id}" aria-label="この記録を削除">${iconHtml("close", 13)}</button>
-    </div>
+      <span class="row-chevron">${iconHtml("chevron", 14)}</span>
+    </button>
   `;
+}
+
+// 今日の食事を、朝食→昼食→間食→夕食の順に小見出し付きで並べる
+function todayMealsHtml(logs, dateKey) {
+  if (!logs.length) {
+    return `<div class="empty">${iconHtml("meal", 30)}<div class="title">まだ記録がありません</div><div class="body">「記録」タブから、食事の写真を撮ってみましょう。</div></div>`;
+  }
+  const grouped = MEAL_ORDER.map((m) => ({
+    meal: m,
+    entries: logs
+      .filter((e) => (MEALS[e.meal] ? e.meal : guessMeal(parseInt(e.time, 10) || 12)) === m)
+      .sort((a, b) => (a.time > b.time ? 1 : -1)),
+  })).filter((g) => g.entries.length);
+
+  return grouped
+    .map((g) => {
+      const kcal = Math.round(g.entries.reduce((s, e) => s + (Number(e.nutrients?.calories) || 0), 0));
+      return `
+        <div class="list-subhead">
+          <span class="msh-ic">${iconHtml(MEALS[g.meal].icon, 14)}</span>${MEALS[g.meal].label}
+          <span class="msh-kcal tnum">${kcal} kcal</span>
+        </div>
+        ${g.entries.map((e) => `<div class="no-sep-wrap">${mealRowHtml(e, dateKey)}</div>`).join("")}
+      `;
+    })
+    .join("");
 }
 
 function greeting() {
@@ -988,6 +1668,37 @@ function greeting() {
   if (h < 11) return "おはようございます";
   if (h < 18) return "こんにちは";
   return "こんばんは";
+}
+
+// この1週間のミニグラフ(タップでトレンドへ)
+function weekStripHtml(targets) {
+  const days = dailySums(7);
+  const streak = streakDays();
+  const cols = days
+    .map((d) => {
+      const pct = Math.min(100, Math.round(((d.sum.calories || 0) / targets.calories) * 100));
+      const today = d.key === todayKey();
+      const over = d.sum.calories > targets.calories;
+      return `
+        <div class="wd ${today ? "today" : ""}">
+          <div class="wd-bar"><span class="${over ? "over" : ""}" style="height:${d.count ? Math.max(pct, 6) : 0}%"></span></div>
+          <span class="wd-label">${weekdayChar(d.key)}</span>
+        </div>`;
+    })
+    .join("");
+
+  return `
+    <button type="button" class="panel week-panel tappable" data-action="goto-trends">
+      <div class="panel-head" style="margin-bottom:12px;">
+        <h3>この1週間</h3>
+        <span class="week-side">
+          ${streak >= 2 ? `<span class="badge accent">${iconHtml("flame", 12)} 連続${streak}日</span>` : ""}
+          <span class="row-chevron">${iconHtml("chevron", 13)}</span>
+        </span>
+      </div>
+      <div class="week-strip">${cols}</div>
+    </button>
+  `;
 }
 
 function renderHome() {
@@ -1001,11 +1712,7 @@ function renderHome() {
 
   const caption = kcalOver
     ? `目標を <strong>${Math.round(consumed.calories) - targets.calories}</strong> kcal 超えています`
-    : `目標 <strong>${targets.calories}</strong> kcal まで、あと <strong>${remainKcal}</strong> kcal`;
-
-  const mealsHtml = logs.length
-    ? logs.map((e) => mealRowHtml(e, todayKey())).join("")
-    : `<div class="empty">${iconHtml("meal", 30)}<div class="title">まだ記録がありません</div><div class="body">「記録」タブから、食事の写真を撮ってみましょう。</div></div>`;
+    : `残り <strong>${remainKcal}</strong> kcal`;
 
   const detailHtml = state.showDetail
     ? SECONDARY_NUTRIENTS.map((k) => nutrientRow(k, consumed[k], targets[k])).join("")
@@ -1014,23 +1721,29 @@ function renderHome() {
   return `
     <div class="nav-bar">
       <div>
-        <div class="footnote" style="margin-bottom:2px;">${greeting()}</div>
+        <div class="footnote" style="margin-bottom:2px;">${greeting()}・${formatDateLabel(todayKey())}</div>
         <h1 class="large-title">今日</h1>
       </div>
-      <span class="sub">${formatDateLabel(todayKey())}</span>
     </div>
 
-    <div class="panel" style="padding:26px 20px 24px;">
-      <div class="ring-wrap">
-        ${ringHtml(consumed.calories, targets.calories)}
-        <div class="ring-caption">${caption}</div>
+    <div class="panel hero">
+      <div class="hero-grid">
+        <div class="hero-ring">
+          ${ringHtml(consumed.calories, targets.calories)}
+          <div class="ring-caption">${caption}</div>
+        </div>
+        <div class="macro-col">
+          ${["protein", "fat", "carb"].map((k) => macroRowHtml(k, consumed[k], targets[k])).join("")}
+        </div>
       </div>
     </div>
+
+    ${weekStripHtml(targets)}
 
     <div class="group" style="margin-top:28px;">
       <div class="group-title">主要な栄養素</div>
       <div class="list">
-        ${PRIMARY_NUTRIENTS.filter((k) => k !== "calories").map((k) => nutrientRow(k, consumed[k], targets[k])).join("")}
+        ${["fiber", "salt"].map((k) => nutrientRow(k, consumed[k], targets[k])).join("")}
         ${detailHtml}
         <button type="button" class="row tappable" data-action="toggle-detail">
           <span class="row-main"><span class="row-label" style="color:var(--accent);font-size:15px;">${state.showDetail ? "その他の栄養素を隠す" : "その他の栄養素も見る"}</span></span>
@@ -1053,8 +1766,143 @@ function renderHome() {
 
     <div class="group">
       <div class="group-title">今日の記録</div>
-      <div class="list">${mealsHtml}</div>
+      <div class="list">${todayMealsHtml(logs, todayKey())}</div>
     </div>
+  `;
+}
+
+// ---------------- 描画: トレンド ----------------
+
+function renderTrends() {
+  const p = state.profile;
+  const targets = calcTargets(p);
+  const n = state.trendRange;
+  const days = dailySums(n);
+  const recorded = days.filter((d) => d.count > 0);
+  const streak = streakDays();
+
+  // エネルギーの棒グラフ
+  const chartDays = days.map((d) => ({
+    label: n <= 7 ? weekdayChar(d.key) : formatDateShort(d.key),
+    v: Math.round(d.sum.calories || 0),
+    today: d.key === todayKey(),
+    over: d.sum.calories > targets.calories,
+  }));
+  const avgKcal = recorded.length
+    ? Math.round(recorded.reduce((s, d) => s + d.sum.calories, 0) / recorded.length)
+    : 0;
+
+  // PFCバランス(記録がある日の平均 %エネルギー)
+  let pfcHtml = "";
+  const daysWithKcal = recorded.filter((d) => d.sum.calories > 0);
+  if (daysWithKcal.length) {
+    const avgPct = (macroKey, kcalPerG) => {
+      const pcts = daysWithKcal.map((d) => Math.min(100, ((d.sum[macroKey] * kcalPerG) / d.sum.calories) * 100));
+      return pcts.reduce((s, v) => s + v, 0) / pcts.length;
+    };
+    const b = targetBasis(p);
+    pfcHtml = `
+      <div class="panel">
+        <div class="panel-head"><h3>エネルギー産生栄養素バランス</h3></div>
+        ${pfcBalanceRow("protein", "たんぱく質", avgPct("protein", 4), PROTEIN_DG[b.bandIndex])}
+        ${pfcBalanceRow("fat", "脂質", avgPct("fat", 9), FAT_DG)}
+        ${pfcBalanceRow("carb", "炭水化物", avgPct("carb", 4), CARB_DG)}
+        <p class="footnote" style="margin-top:12px;">記録がある日の平均。帯が食事摂取基準の目標量(%エネルギー)の範囲です。</p>
+      </div>`;
+  }
+
+  // 体重
+  const weights = Storage.getWeights();
+  const wKeys = Object.keys(weights).sort().slice(-30);
+  const wPoints = wKeys.map((k) => ({ key: k, kg: Number(weights[k]) })).filter((pt) => Number.isFinite(pt.kg));
+  const weightHtml = `
+    <div class="panel">
+      <div class="panel-head">
+        <h3>体重</h3>
+        ${wPoints.length ? `<span class="panel-side tnum">${wPoints[wPoints.length - 1].kg} kg</span>` : ""}
+      </div>
+      ${wPoints.length >= 2
+        ? weightLineChart(wPoints)
+        : `<p class="muted" style="margin:4px 0 14px;">${wPoints.length === 1 ? "あと1回記録すると、推移のグラフが出ます。" : "体重を記録すると、ここに推移が表示されます。"}</p>`}
+      <button type="button" class="btn btn-tinted btn-sm" data-action="open-weight" style="margin-top:${wPoints.length >= 2 ? "12px" : "0"};">${iconHtml("scale", 15)} 体重を記録</button>
+    </div>`;
+
+  // 栄養素ごとの平均充足率
+  let fulfillHtml = "";
+  if (recorded.length) {
+    const avgOf = (k) => recorded.reduce((s, d) => s + (d.sum[k] || 0), 0) / recorded.length;
+    const keys = ["protein", "fiber", "calcium", "iron", "zinc", "magnesium", "potassium",
+      "vitaminA", "vitaminC", "vitaminD", "vitaminE", "vitaminB1", "vitaminB2", "vitaminB6", "vitaminB12", "folate"];
+    const rows = keys.map((k) => {
+      const avg = avgOf(k);
+      const t = targets[k];
+      const pct = t > 0 ? Math.round((avg / t) * 100) : 0;
+      return `
+        <div class="nutrient">
+          <div class="nutrient-head">
+            <span class="nutrient-name">${nutrientIconHtml(k)} ${NUTRIENT_META[k].label}</span>
+            <span class="nutrient-val">平均 ${Math.round(avg * 10) / 10}${NUTRIENT_META[k].unit} ・ ${pct}%</span>
+          </div>
+          <div class="bar"><span style="width:${Math.min(100, pct)}%"></span></div>
+        </div>`;
+    }).join("");
+    const limits = ["salt", "saturatedFat"].map((k) => {
+      const avg = avgOf(k);
+      const t = targets[k];
+      const over = avg > t;
+      const pct = t > 0 ? Math.min(100, Math.round((avg / t) * 100)) : 0;
+      return `
+        <div class="nutrient">
+          <div class="nutrient-head">
+            <span class="nutrient-name">${nutrientIconHtml(k)} ${NUTRIENT_META[k].label}</span>
+            <span class="nutrient-val">平均 ${Math.round(avg * 10) / 10} / ${t}${NUTRIENT_META[k].unit} 以下</span>
+          </div>
+          <div class="bar ${over ? "over" : ""}"><span style="width:${pct}%"></span></div>
+        </div>`;
+    }).join("");
+    fulfillHtml = `
+      <div class="group">
+        <div class="group-title">栄養素の平均充足率(記録がある日)</div>
+        <div class="list">${rows}</div>
+      </div>
+      <div class="group">
+        <div class="group-title">控えめにしたいもの</div>
+        <div class="list">${limits}</div>
+      </div>`;
+  }
+
+  return `
+    <div class="nav-bar">
+      <h1 class="large-title">トレンド</h1>
+      <div class="segmented range">
+        <button type="button" class="seg ${n === 7 ? "on" : ""}" data-action="set-trend-range" data-range="7">週</button>
+        <button type="button" class="seg ${n === 30 ? "on" : ""}" data-action="set-trend-range" data-range="30">月</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>エネルギー</h3>
+        ${avgKcal ? `<span class="panel-side">平均 <strong class="tnum">${avgKcal}</strong> kcal</span>` : ""}
+      </div>
+      ${energyBarChart(chartDays, targets.calories)}
+    </div>
+
+    <div class="stat-grid">
+      <div class="panel stat">
+        <span class="stat-num tnum">${recorded.length}<small>/${n}日</small></span>
+        <span class="stat-label">記録した日</span>
+      </div>
+      <div class="panel stat">
+        <span class="stat-num tnum">${streak}<small>日</small></span>
+        <span class="stat-label">連続記録</span>
+      </div>
+    </div>
+
+    ${pfcHtml}
+    ${weightHtml}
+    ${fulfillHtml}
+    ${!recorded.length ? `<div class="list" style="margin-top:20px;"><div class="empty">${iconHtml("trend", 30)}<div class="title">まだデータがありません</div><div class="body">食事を記録すると、ここに傾向が表示されます。</div></div></div>` : ""}
   `;
 }
 
@@ -1122,9 +1970,17 @@ function renderResultForm(r) {
             <input type="text" id="mealName" name="mealName" value="${escapeHtml(r.items[0]?.name || "食事")}">
           </div>
           <div class="field-stack">
+            <div class="field-caption"><span>区分</span></div>
+            ${segmentedHtml("meal", guessMeal(new Date().getHours()))}
+          </div>
+          <div class="field-stack">
             <div class="field-caption"><span>メモ(任意)</span></div>
             <input type="text" id="memo" name="memo" placeholder="外食・自炊 など">
           </div>
+          <label class="check-row">
+            <input type="checkbox" name="saveFav" value="1">
+            <span>よく食べるものにも追加(次から1タップで記録できます)</span>
+          </label>
         </div>
       </div>
 
@@ -1220,6 +2076,29 @@ function openCaptureInfoSheet() {
   `);
 }
 
+// 写真を選ぶ前の画面に出す「よく食べるもの」(1タップで記録)
+function favoritesQuickHtml() {
+  const favs = Storage.getFavorites();
+  if (!favs.length) return "";
+  return `
+    <div class="group" style="margin-top:24px;">
+      <div class="group-title">よく食べるもの</div>
+      <div class="list">
+        ${favs.slice(0, 6).map((f) => `
+          <div class="row with-thumb">
+            ${f.thumb ? `<img class="thumb" src="${f.thumb}" alt="" decoding="async">` : `<span class="thumb">${iconHtml("meal", 18)}</span>`}
+            <span class="row-main">
+              <span class="row-label ellipsis">${escapeHtml(f.name)}</span>
+              <span class="row-sub">${Math.round(f.nutrients?.calories || 0)} kcal</span>
+            </span>
+            <button type="button" class="quick-add" data-action="fav-quick-add" data-id="${f.id}" aria-label="${escapeHtml(f.name)}を記録">${iconHtml("plus", 15)}</button>
+          </div>`).join("")}
+      </div>
+      <div class="group-note">＋を押すだけで、今の時刻で記録されます。登録の整理は「設定」からできます。</div>
+    </div>
+  `;
+}
+
 function renderCapture() {
   const c = state.capture;
 
@@ -1232,11 +2111,15 @@ function renderCapture() {
     body = `
       <div class="actions" style="margin-top:0;">
         <button type="button" class="btn btn-primary" data-action="open-camera">${iconHtml("camera", 17)} カメラで撮影</button>
-        <button type="button" class="btn btn-gray" data-action="open-library">${iconHtml("gallery", 17)} ライブラリから選ぶ</button>
+        <div class="actions-row">
+          <button type="button" class="btn btn-gray" data-action="open-library">${iconHtml("gallery", 17)} ライブラリ</button>
+          <button type="button" class="btn btn-gray" data-action="open-manual-add">${iconHtml("pencil", 16)} 手入力</button>
+        </div>
       </div>
-      <p class="footnote" style="text-align:center;margin-top:18px;">スマホで撮った写真をコピーして、この画面に貼り付けることもできます。</p>
+      <p class="footnote" style="text-align:center;margin-top:14px;">写真がなくても、名前と分かる数値だけで記録できます。</p>
       <input type="file" id="file-camera" accept="image/*" capture="environment">
       <input type="file" id="file-library" accept="image/*">
+      ${favoritesQuickHtml()}
     `;
   } else if (c.analyzing) {
     body = `<div class="analyzing"><div class="spinner"></div><span>AIが解析しています…</span></div>`;
@@ -1263,22 +2146,40 @@ function renderCapture() {
 
 // ---------------- 描画: 履歴 ----------------
 
-function renderHistory() {
+function historyResultsHtml() {
   const all = Storage.getAllLogs();
+  const q = state.historyQuery.trim().toLowerCase();
+  const targets = calcTargets(state.profile);
   const dates = Object.keys(all).sort((a, b) => (a < b ? 1 : -1));
 
-  if (dates.length === 0) {
-    return `
-      <div class="nav-bar"><h1 class="large-title">履歴</h1></div>
-      <div class="list">
-        <div class="empty">${iconHtml("calendar", 30)}<div class="title">まだ記録がありません</div><div class="body">食事を記録すると、ここに日ごとにまとまります。</div></div>
-      </div>
-    `;
+  if (!dates.length) {
+    return `<div class="list"><div class="empty">${iconHtml("calendar", 30)}<div class="title">まだ記録がありません</div><div class="body">食事を記録すると、ここに日ごとにまとまります。</div></div></div>`;
   }
 
-  const targets = calcTargets(state.profile);
+  // 検索中は、名前が一致する記録を日付をまたいで一覧にする
+  if (q) {
+    const hits = [];
+    dates.forEach((d) => {
+      all[d].forEach((e) => {
+        if ((e.name || "").toLowerCase().includes(q)) hits.push({ d, e });
+      });
+    });
+    if (!hits.length) {
+      return `<div class="list"><div class="empty">${iconHtml("search", 30)}<div class="title">見つかりませんでした</div><div class="body">別の言葉で探してみてください。</div></div></div>`;
+    }
+    return `<div class="list">${hits.slice(0, 80).map(({ d, e }) => `
+      <button type="button" class="row with-thumb tappable" data-action="open-entry" data-date="${d}" data-id="${e.id}">
+        ${e.thumb ? `<img class="thumb" src="${e.thumb}" alt="" decoding="async">` : `<span class="thumb">${iconHtml(MEALS[e.meal]?.icon || "meal", 18)}</span>`}
+        <span class="row-main">
+          <span class="row-label ellipsis">${escapeHtml(e.name)}</span>
+          <span class="row-sub">${formatDateLabel(d)} ${e.time} ・ ${Math.round(e.nutrients.calories)} kcal</span>
+        </span>
+        <span class="row-chevron">${iconHtml("chevron", 14)}</span>
+      </button>`).join("")}</div>`;
+  }
 
-  const daysHtml = dates.map((d) => {
+  const shown = dates.slice(0, state.historyLimit);
+  const daysHtml = shown.map((d) => {
     const entries = all[d];
     const sum = sumNutrients(entries);
     const open = state.historyOpenDate === d;
@@ -1301,9 +2202,27 @@ function renderHistory() {
     `;
   }).join("");
 
+  const moreBtn = dates.length > state.historyLimit
+    ? `<button type="button" class="row tappable no-sep" data-action="history-more" style="justify-content:center;"><span style="color:var(--accent);font-size:15px;font-weight:600;">さらに表示(残り${dates.length - state.historyLimit}日)</span></button>`
+    : "";
+
+  return `<div class="list">${daysHtml}${moreBtn}</div>`;
+}
+
+function updateHistoryResults() {
+  const box = $("#history-results");
+  if (box) box.innerHTML = historyResultsHtml();
+  else render();
+}
+
+function renderHistory() {
   return `
     <div class="nav-bar"><h1 class="large-title">履歴</h1></div>
-    <div class="list">${daysHtml}</div>
+    <div class="search-wrap">
+      ${iconHtml("search", 15)}
+      <input type="search" id="history-search" placeholder="料理名で探す" value="${escapeHtml(state.historyQuery)}" autocomplete="off">
+    </div>
+    <div id="history-results">${historyResultsHtml()}</div>
   `;
 }
 
@@ -1334,6 +2253,7 @@ function renderSettings() {
   const basis = targetBasis(p);
   const cfg = getAiConfig(p);
   const guide = getProviderGuide(cfg.providerId);
+  const favCount = Storage.getFavorites().length;
 
   return `
     <div class="nav-bar"><h1 class="large-title">設定</h1></div>
@@ -1346,6 +2266,14 @@ function renderSettings() {
           <span class="row-main">
             <span class="row-label">プロフィール</span>
             <span class="row-sub">${p.age}歳・${p.sex === "male" ? "男性" : "女性"}・${p.height}cm・${p.weight}kg</span>
+          </span>
+          <span class="row-chevron">${iconHtml("chevron", 14)}</span>
+        </button>
+        <button type="button" class="row with-icon tappable" data-action="open-weight">
+          <span class="row-icon">${iconHtml("scale", 16)}</span>
+          <span class="row-main">
+            <span class="row-label">体重を記録</span>
+            <span class="row-sub">推移は「トレンド」で見られます</span>
           </span>
           <span class="row-chevron">${iconHtml("chevron", 14)}</span>
         </button>
@@ -1390,8 +2318,32 @@ function renderSettings() {
     </div>
 
     <div class="group">
-      <div class="group-title">データ</div>
+      <div class="group-title">記録とデータ</div>
       <div class="list">
+        <button type="button" class="row with-icon tappable" data-action="open-fav-manage">
+          <span class="row-icon">${iconHtml("star", 16)}</span>
+          <span class="row-main">
+            <span class="row-label">よく食べるもの</span>
+            <span class="row-sub">${favCount ? `${favCount}件を登録済み` : "まだ登録がありません"}</span>
+          </span>
+          <span class="row-chevron">${iconHtml("chevron", 14)}</span>
+        </button>
+        <button type="button" class="row with-icon tappable" data-action="export-data">
+          <span class="row-icon neutral">${iconHtml("export", 16)}</span>
+          <span class="row-main">
+            <span class="row-label">データを書き出す</span>
+            <span class="row-sub">機種変更・バックアップ用(APIキーは含みません)</span>
+          </span>
+          <span class="row-chevron">${iconHtml("chevron", 14)}</span>
+        </button>
+        <button type="button" class="row with-icon tappable" data-action="import-data">
+          <span class="row-icon neutral">${iconHtml("import", 16)}</span>
+          <span class="row-main">
+            <span class="row-label">データを読み込む</span>
+            <span class="row-sub">書き出したファイルから復元・統合します</span>
+          </span>
+          <span class="row-chevron">${iconHtml("chevron", 14)}</span>
+        </button>
         <button type="button" class="row with-icon tappable" data-action="open-about">
           <span class="row-icon neutral">${iconHtml("shield", 16)}</span>
           <span class="row-main">
@@ -1408,7 +2360,8 @@ function renderSettings() {
       <div class="group-note">記録はこの端末のブラウザ内にのみ保存されています。</div>
     </div>
 
-    <p class="disclaimer">栄養の目安値・AIによる推定値は一般的な参考情報です。医療・栄養に関する専門的な判断が必要な場合は、医師や管理栄養士にご相談ください。</p>
+    <input type="file" id="file-import" accept="application/json,.json">
+    <p class="disclaimer">栄養の目安値・AIによる推定値は一般的な参考情報です。医療・栄養に関する専門的な判断が必要な場合は、医師や管理栄養士にご相談ください。<br>バージョン ${APP_VERSION}</p>
   `;
 }
 

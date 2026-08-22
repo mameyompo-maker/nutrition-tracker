@@ -1,7 +1,10 @@
-// 最小限のサービスワーカー: アプリの見た目(シェル)をキャッシュしてオフラインでも開けるようにする。
+// サービスワーカー: アプリの見た目(シェル)をキャッシュしてオフラインでも開けるようにする。
 // 栄養解析にはネット接続と、利用者自身のAI APIキーが必要です。
+//
+// アセットを追加したら ASSETS と CACHE_NAME の版を必ず上げること。
+// 忘れると利用者の端末に古いファイルが残る。
 
-const CACHE_NAME = "nutriapp-shell-v6";
+const CACHE_NAME = "nutriapp-shell-v7";
 const ASSETS = [
   "./",
   "./index.html",
@@ -10,11 +13,13 @@ const ASSETS = [
   "./nutrition.js",
   "./exif.js",
   "./storage.js",
+  "./charts.js",
   "./api.js",
   "./app.js",
   "./manifest.json",
   "./icon-192.png",
   "./icon-512.png",
+  "./icon-maskable-512.png",
 ];
 
 self.addEventListener("install", (event) => {

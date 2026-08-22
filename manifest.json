@@ -7,20 +7,26 @@
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#F5F5F7",
-  "theme_color": "#FFFFFF",
+  "theme_color": "#F5F5F7",
   "lang": "ja",
   "icons": [
     {
       "src": "icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
       "src": "icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ],
   "id": "/nutrition-tracker/",
@@ -44,6 +50,32 @@
       "short_name": "記録",
       "description": "写真を撮って栄養を記録する",
       "url": "./index.html?view=capture",
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "体重を記録",
+      "short_name": "体重",
+      "description": "今日の体重を記録する",
+      "url": "./index.html?view=trends&sheet=weight",
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "トレンドを見る",
+      "short_name": "トレンド",
+      "description": "エネルギーと栄養バランスの推移を見る",
+      "url": "./index.html?view=trends",
       "icons": [
         {
           "src": "icon-192.png",
