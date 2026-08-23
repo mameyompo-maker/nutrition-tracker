@@ -4,7 +4,12 @@
 // アセットを追加したら ASSETS と CACHE_NAME の版を必ず上げること。
 // 忘れると利用者の端末に古いファイルが残る。
 
-const CACHE_NAME = "nutriapp-shell-v10";
+const CACHE_NAME = "nutriapp-shell-v11";
+
+// 共有シートから渡された写真を、画面へ引き渡すまでの一時置き場。
+// シェルのキャッシュとは別に持ち、版を上げても消さない。
+const SHARE_CACHE = "nutriapp-share";
+const SHARE_KEY = "./__shared-photo";
 const ASSETS = [
   "./",
   "./index.html",
@@ -33,7 +38,9 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+      // 共有の受け渡し用は消さない。消すと、共有した直後に版が上がったときに
+      // 写真が行方不明になる。
+      Promise.all(keys.filter((k) => k !== CACHE_NAME && k !== SHARE_CACHE).map((k) => caches.delete(k)))
     )
   );
   self.clients.claim();
@@ -41,8 +48,32 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
-  if (req.method !== "GET") return;
   const url = new URL(req.url);
+
+  // 共有シートから写真が渡ってきたとき。
+  // GitHub Pages のような静的なホストは POST を受け取れないので、
+  // ここで横取りして保管し、画面へは GET で戻す。
+  // サーバーを持たずに「共有から記録」を成立させられるのは、この経路だけ。
+  if (req.method === "POST" && url.searchParams.has("share-target")) {
+    event.respondWith((async () => {
+      try {
+        const fd = await req.formData();
+        const file = fd.get("photo");
+        if (file && file.size) {
+          const cache = await caches.open(SHARE_CACHE);
+          await cache.put(SHARE_KEY, new Response(file, {
+            headers: { "content-type": file.type || "image/jpeg" },
+          }));
+        }
+      } catch (e) {
+        // 受け取れなくても、画面だけは開く。黙って何も起きないのが最悪なので。
+      }
+      return Response.redirect(new URL("./index.html?shared=1", self.location).href, 303);
+    })());
+    return;
+  }
+
+  if (req.method !== "GET") return;
   // 外部のAI APIへのリクエストはキャッシュしない(常にネットワークへ)
   if (url.origin !== self.location.origin) return;
 

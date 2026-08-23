@@ -379,6 +379,94 @@
     closeSheet();
     await wait(60);
 
+
+    // --- 撮り忘れの回収 ---
+    {
+      const html = missingDaysHtml();
+      ok("空いている日をホームに出す", html.includes("まだ入れられます"), html.slice(0, 40));
+      ok("責める言い方をしない", !/忘れ|サボ|できていません/.test(html));
+      ok("並べるのは多くても2日", (html.match(/data-action="backfill"/g) || []).length <= 2);
+    }
+    setView("home");
+    await wait(80);
+    const gapBtn = sel('[data-action="backfill"]');
+    ok("ホームから埋める導線がある", !!gapBtn);
+    if (gapBtn) {
+      const gapDate = gapBtn.dataset.date;
+      gapBtn.click();
+      await wait(120);
+      ok("押すと記録画面へ移る", state.view === "capture");
+      ok("その日付を記録先にする", state.logDate === gapDate, `${state.logDate} / ${gapDate}`);
+      ok("埋めている最中と分かる帯が出る", txt().includes("の記録として保存します"));
+      ok("記録先が今日ではないと判定できる", isBackfilling() === true);
+
+      // 実際にその日付へ入るか
+      const before = Storage.getLogsForDate(gapDate).length;
+      state.capture.result = { items: [{ name: "テスト飯" }], nutrients: { calories: 300, protein: 10 } };
+      await doAddLog({ auto: true });
+      await wait(80);
+      ok("空いていた日に記録が入る", Storage.getLogsForDate(gapDate).length === before + 1);
+      ok("今日には入っていない", !Storage.getLogsForDate(todayKey()).some((e) => e.name === "テスト飯"));
+
+      // 後片付け
+      Storage.setAllLogs(Object.assign({}, Storage.getAllLogs(), {
+        [gapDate]: Storage.getLogsForDate(gapDate).filter((e) => e.name !== "テスト飯"),
+      }));
+      state.logDate = null;
+    }
+    setView("home");
+    await wait(60);
+    ok("ホームに戻ると今日に戻る", isBackfilling() === false);
+
+    // --- 昨日と同じ ---
+    {
+      const html = repeatYesterdayHtml();
+      ok("昨日食べたものを出す", html.includes("昨日と同じ") || html === "", html.slice(0, 30));
+      if (html) {
+        setView("capture");
+        await wait(100);
+        const btn = sel('[data-action="repeat-add"]');
+        ok("＋で1タップ登録できる", !!btn);
+        if (btn) {
+          const before = Storage.getLogsForDate(todayKey()).length;
+          btn.click();
+          await wait(100);
+          ok("押すと今日に記録が増える", Storage.getLogsForDate(todayKey()).length === before + 1);
+        }
+      }
+    }
+
+    // --- 記録タブですぐカメラ ---
+    ok("すぐカメラは既定でオフ", instantCameraEnabled() === false);
+    toggleInstantCamera();
+    ok("設定で入れられる", instantCameraEnabled() === true);
+    toggleInstantCamera();
+    ok("戻せる", instantCameraEnabled() === false);
+
+    // --- 共有シートからの記録 ---
+    {
+      const mf = await fetch("./manifest.json").then((r) => r.json());
+      ok("共有の受け口がマニフェストにある", !!mf.share_target);
+      ok("受け口はPOSTで写真を受ける",
+         mf.share_target?.method === "POST" && !!mf.share_target?.params?.files?.length);
+      ok("受け口のURLに目印がある", String(mf.share_target?.action).includes("share-target"));
+
+      const savedAuto = state.profile.autoLog;
+      state.profile.autoLog = false;   // ここでは解析まで走らせない
+      const cv = document.createElement("canvas");
+      cv.width = 8; cv.height = 8;
+      cv.getContext("2d").fillRect(0, 0, 8, 8);
+      const blob = await new Promise((r) => cv.toBlob(r, "image/jpeg"));
+      const cache = await caches.open("nutriapp-share");
+      await cache.put("./__shared-photo", new Response(blob, { headers: { "content-type": "image/jpeg" } }));
+      await pickUpSharedPhoto();
+      await wait(300);
+      ok("共有された写真を拾って記録画面に載せる", !!state.capture.dataUrl);
+      ok("拾ったあとは置き場を空にする", !(await (await caches.open("nutriapp-share")).match("./__shared-photo")));
+      state.profile.autoLog = savedAuto;
+      state.capture = CAPTURE_INITIAL();
+    }
+
     // 仕上げ
     errors.forEach((e) => { fails++; out.push("FAIL  " + e); });
     const div = document.createElement("div");

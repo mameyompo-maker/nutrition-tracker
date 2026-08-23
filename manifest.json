@@ -44,6 +44,21 @@
   ],
   "dir": "ltr",
   "prefer_related_applications": false,
+  "share_target": {
+    "action": "./index.html?share-target=1",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "files": [
+        {
+          "name": "photo",
+          "accept": ["image/jpeg", "image/png", "image/webp", "image/heic", "image/*"]
+        }
+      ]
+    }
+  },
   "shortcuts": [
     {
       "name": "食事を記録",

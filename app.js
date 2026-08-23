@@ -32,7 +32,20 @@ const state = {
   sheet: null,
   // 初回設定では、AIにつながることを確かめるまで先に進めない
   connectionVerified: false,
+  // 新しい記録をどの日に入れるか。null なら今日。
+  // 撮り忘れた日を後から埋めるときだけ、ここに過去の日付が入る。
+  logDate: null,
 };
+
+// いま記録を入れる先の日付
+function activeLogDate() {
+  return state.logDate || todayKey();
+}
+
+// 過去の日を埋めている最中かどうか
+function isBackfilling() {
+  return !!state.logDate && state.logDate !== todayKey();
+}
 
 // 設定フォームでAIサービスを切り替えたとき、入力途中の値を失わないための一時置き場
 const formScratch = { apiKeys: {}, models: {}, baseUrls: {} };
@@ -139,6 +152,12 @@ function init() {
     setTimeout(openWeightSheet, 80);
   }
 
+  // 写真アプリの「共有」からこのアプリを選んだとき。
+  // サービスワーカーが受け取って置いておいた写真を、ここで拾う。
+  if (state.profile && params.has("shared")) {
+    pickUpSharedPhoto();
+  }
+
   document.body.addEventListener("click", onBodyClick);
   document.body.addEventListener("change", onBodyChange);
   document.body.addEventListener("input", onBodyInput);
@@ -168,6 +187,9 @@ function init() {
 }
 
 function setView(view) {
+  // 別の画面へ移ったら、過去の日を埋めるモードは解除する。
+  // 解除し忘れると、後日の記録がその日付へ入ってしまう。
+  if (view !== "capture") state.logDate = null;
   closeSheet();
   const changed = state.view !== view;
   state.view = view;
@@ -294,7 +316,17 @@ function attachSheetDrag(sheet) {
 
 function onBodyClick(e) {
   const tab = e.target.closest(".tab-btn");
-  if (tab) { setView(tab.dataset.view); return; }
+  if (tab) {
+    setView(tab.dataset.view);
+    // 記録タブを押したら、そのままカメラを出す設定のとき。
+    // ここは押した流れの中で呼ばないと、ブラウザに「勝手に開いた」と見なされて弾かれる。
+    // setTimeout を挟んではいけない。
+    if (tab.dataset.view === "capture" && instantCameraEnabled() && !state.capture.dataUrl) {
+      const input = $("#file-camera");
+      if (input) input.click();
+    }
+    return;
+  }
 
   const actionEl = e.target.closest("[data-action]");
   if (!actionEl) return;
@@ -339,6 +371,14 @@ function onBodyClick(e) {
     case "open-weight": openWeightSheet(); break;
     case "weight-save": saveWeightSheet(); break;
     case "fav-quick-add": quickAddFavorite(actionEl.dataset.id); break;
+    case "backfill":
+      setView("capture");
+      state.logDate = actionEl.dataset.date;
+      render();
+      break;
+    case "backfill-cancel": state.logDate = null; render(); break;
+    case "repeat-add": repeatAdd(actionEl); break;
+    case "toggle-instant-camera": toggleInstantCamera(); break;
     case "open-targets": openTargetsSheet(); break;
     case "targets-save": saveTargetsSheet(); break;
     case "targets-reset": resetTargetsSheet(); break;
@@ -479,6 +519,7 @@ function readProfileForm(form) {
     // ここで引き継がないと、プロフィールを保存し直したときに消えてしまう
     customTargets: prev.customTargets || {},
     autoLog: prev.autoLog,
+    instantCamera: prev.instantCamera,
     targetWeight: prev.targetWeight,
     age: parseInt(fd.get("age"), 10),
     sex: fd.get("sex"),
@@ -854,6 +895,30 @@ async function handleFileSelected(file) {
   }
 }
 
+// 共有シートから渡された写真を拾って、そのまま記録の流れに載せる。
+// 写真アプリで「共有 → このアプリ」を選ぶだけで記録が終わるので、
+// アプリを開いてカメラを出す手間がまるごと消える。
+// (Android の Chrome で動く。iOS の Safari は共有先になれないため、
+//  そちらでは何も起きない。有効な端末でだけ効く作りにしてある。)
+async function pickUpSharedPhoto() {
+  // 履歴に ?shared=1 を残すと、再読み込みのたびに拾いにいってしまう
+  try { history.replaceState(null, "", location.pathname); } catch (e) {}
+  if (!("caches" in window)) return;
+  try {
+    const cache = await caches.open("nutriapp-share");
+    const res = await cache.match("./__shared-photo");
+    if (!res) return;
+    await cache.delete("./__shared-photo");
+    const blob = await res.blob();
+    if (!blob || !blob.size) return;
+    const file = new File([blob], "shared.jpg", { type: blob.type || "image/jpeg" });
+    setView("capture");
+    await handleFileSelected(file);
+  } catch (e) {
+    showToast("共有された写真を読み込めませんでした");
+  }
+}
+
 // 撮ったら自動で記録するか。設定が無い間は「する」を既定にする。
 function autoLogEnabled() {
   const p = state.profile || {};
@@ -994,7 +1059,7 @@ async function doAddLog(opts = {}) {
     source: r.source || null,
     confidence: r.confidence || null,
   };
-  const status = Storage.addLog(todayKey(), entry);
+  const status = Storage.addLog(activeLogDate(), entry);
   notifySaveResult(status);
 
   if (fd && fd.get("saveFav")) {
@@ -1009,12 +1074,12 @@ async function doAddLog(opts = {}) {
     // 「間違っていたら直せる」と分かることが、自動記録を受け入れてもらう条件。
     showToast(`${name} を記録しました`, {
       actionLabel: "確認",
-      onAction: () => openEntrySheet(todayKey(), entry.id),
+      onAction: () => openEntrySheet(activeLogDate(), entry.id),
     });
   } else {
     showToast("記録に追加しました", {
       actionLabel: "共有",
-      onAction: () => openShareSheet(todayKey(), entry.id),
+      onAction: () => openShareSheet(activeLogDate(), entry.id),
     });
   }
 }
@@ -1274,7 +1339,7 @@ function quickAddFavorite(favId) {
     note: "",
     thumb: fav.thumb || null,
   };
-  const status = Storage.addLog(todayKey(), entry);
+  const status = Storage.addLog(activeLogDate(), entry);
   notifySaveResult(status);
   buzz();
   render();
@@ -1359,7 +1424,7 @@ function saveManualAdd() {
     note: "",
     thumb: null,
   };
-  const status = Storage.addLog(todayKey(), entry);
+  const status = Storage.addLog(activeLogDate(), entry);
   notifySaveResult(status);
   buzz();
   closeSheet();
@@ -1463,6 +1528,122 @@ function targetWeightProgressHtml(latest) {
   else if (diff > 0) text = `目標 ${t} kg まで あと ${abs} kg。`;
   else text = `目標 ${t} kg まで あと ${abs} kg(増やす方向)。`;
   return `<p class="muted" style="margin:10px 0 0;">${text}</p>`;
+}
+
+// ---------------- 撮り忘れた日を、後から埋める ----------------
+
+// ズボラな人が記録をやめる一番の理由は「その場で撮り忘れて、そのまま放置する」こと。
+// 空いた日を責めずに見せて、いつでも埋められるようにしておく。
+// 責める言い方をしないことと、埋めるのが1タップで始まることの両方が要る。
+function missingDaysHtml() {
+  // 今日は「まだ」なので数えない。直近6日のうち、記録が1件も無い日を見る。
+  const days = lastNDates(7).slice(0, 6);
+  const missing = days.filter((k) => Storage.getLogsForDate(k).length === 0);
+  if (!missing.length) return "";
+
+  // 何日も空いていると、全部並べたら責められている感じになる。新しい方から2日だけ。
+  const show = missing.slice(-2).reverse();
+  return `
+    <div class="group">
+      <div class="group-title">まだ入れられます</div>
+      <div class="list">
+        ${show.map((k) => `
+          <button type="button" class="row with-icon tappable" data-action="backfill" data-date="${k}">
+            <span class="row-icon">${iconHtml("camera", 16)}</span>
+            <span class="row-main">
+              <span class="row-label">${formatDateLabel(k)}</span>
+              <span class="row-sub">この日の記録を入れる</span>
+            </span>
+            <span class="row-chevron">${iconHtml("chevron", 14)}</span>
+          </button>`).join("")}
+      </div>
+      <div class="group-note">思い出したときで構いません。写真が無くても「手入力」で入れられます。</div>
+    </div>
+  `;
+}
+
+// 前の日に食べたものを、そのまま今日に写す。
+// 毎日だいたい同じものを食べる人には、これが最短の記録になる。
+function repeatYesterdayHtml() {
+  const base = new Date();
+  const y = dateKeyOf(new Date(base.getFullYear(), base.getMonth(), base.getDate() - 1));
+  const entries = Storage.getLogsForDate(y);
+  if (!entries.length) return "";
+  const already = Storage.getLogsForDate(activeLogDate()).map((e) => e.name);
+  // すでに同じ名前を入れてある分は出さない(二重に入れてしまう事故を防ぐ)
+  const rest = entries.filter((e) => !already.includes(e.name)).slice(0, 4);
+  if (!rest.length) return "";
+
+  return `
+    <div class="group" style="margin-top:24px;">
+      <div class="group-title">昨日と同じ</div>
+      <div class="list">
+        ${rest.map((e) => `
+          <div class="row with-thumb">
+            ${e.thumb ? `<img class="thumb" src="${e.thumb}" alt="" decoding="async">` : `<span class="thumb">${iconHtml("meal", 18)}</span>`}
+            <span class="row-main">
+              <span class="row-label ellipsis">${escapeHtml(e.name)}</span>
+              <span class="row-sub">${MEALS[e.meal]?.label || ""} ・ ${Math.round(e.nutrients?.calories || 0)} kcal</span>
+            </span>
+            <button type="button" class="quick-add" data-action="repeat-add" data-date="${y}" data-id="${e.id}" aria-label="${escapeHtml(e.name)}を記録">${iconHtml("plus", 15)}</button>
+          </div>`).join("")}
+      </div>
+      <div class="group-note">＋を押すと、同じ内容を今の時刻で記録します。</div>
+    </div>
+  `;
+}
+
+function repeatAdd(btn) {
+  const src = findEntry(btn.dataset.date, btn.dataset.id);
+  if (!src) { showToast("元の記録が見つかりませんでした"); return; }
+  const entry = {
+    id: newEntryId(),
+    time: nowTimeStr(),
+    name: src.name,
+    meal: guessMeal(new Date().getHours()),
+    items: src.items || [],
+    nutrients: Object.assign({}, src.nutrients),
+    note: src.note || "",
+    thumb: src.thumb || null,
+    portion: src.portion || null,
+    source: src.source || null,
+    confidence: src.confidence || null,
+  };
+  const status = Storage.addLog(activeLogDate(), entry);
+  notifySaveResult(status);
+  buzz();
+  render();
+  showToast(`${src.name} を記録しました`, {
+    actionLabel: "確認",
+    onAction: () => openEntrySheet(activeLogDate(), entry.id),
+  });
+}
+
+// 過去の日を埋めているときに、それと分かるように出す帯
+function backfillBannerHtml() {
+  if (!isBackfilling()) return "";
+  return `
+    <div class="notice" style="margin-bottom:16px;">
+      ${iconHtml("info", 16)}
+      <span><strong>${formatDateLabel(state.logDate)}</strong> の記録として保存します。
+      <button type="button" class="btn btn-plain btn-sm" data-action="backfill-cancel" style="min-height:0;padding:0 0 0 6px;">今日に戻す</button></span>
+    </div>
+  `;
+}
+
+// 記録タブを開いたら、すぐカメラを出すか。
+// 既定は「出さない」。よく食べるものや手入力を選びたいときに
+// カメラが割り込むと、かえって手間が増えるため。
+function instantCameraEnabled() {
+  return (state.profile || {}).instantCamera === true;
+}
+
+function toggleInstantCamera() {
+  state.profile.instantCamera = !instantCameraEnabled();
+  Storage.saveProfile(state.profile);
+  buzz();
+  render();
+  showToast(instantCameraEnabled() ? "記録タブでカメラをすぐ出します" : "カメラは自分で開きます");
 }
 
 function toggleAutoLog() {
@@ -2061,6 +2242,8 @@ function renderHome() {
       <div class="group-title">今日の記録</div>
       <div class="list">${todayMealsHtml(logs, todayKey())}</div>
     </div>
+
+    ${missingDaysHtml()}
   `;
 }
 
@@ -2415,6 +2598,7 @@ function renderCapture() {
       <input type="file" id="file-camera" accept="image/*" capture="environment">
       <input type="file" id="file-library" accept="image/*">
       ${favoritesQuickHtml()}
+      ${repeatYesterdayHtml()}
     `;
   } else if (c.analyzing) {
     body = `<div class="analyzing"><div class="spinner"></div><span>AIが解析しています…</span></div>`;
@@ -2433,6 +2617,7 @@ function renderCapture() {
 
   return `
     <div class="nav-bar"><h1 class="large-title">記録</h1></div>
+    ${backfillBannerHtml()}
     <div class="photo-frame">${preview}</div>
     ${c.dataUrl ? captureBadgeHtml(c.captureInfo) : ""}
     ${body}
@@ -2606,6 +2791,14 @@ function renderSettings() {
             <span class="row-sub">${autoLogEnabled() ? "記録まで自動で進みます" : "確かめてから記録します"}</span>
           </span>
           <span class="row-value">${autoLogEnabled() ? "オン" : "オフ"}</span>
+        </button>
+        <button type="button" class="row with-icon tappable" data-action="toggle-instant-camera">
+          <span class="row-icon">${iconHtml("camera", 16)}</span>
+          <span class="row-main">
+            <span class="row-label">記録タブですぐカメラ</span>
+            <span class="row-sub">${instantCameraEnabled() ? "開くと同時に起動します" : "自分でボタンを押します"}</span>
+          </span>
+          <span class="row-value">${instantCameraEnabled() ? "オン" : "オフ"}</span>
         </button>
       </div>
       <div class="group-note">
