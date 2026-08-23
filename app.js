@@ -339,6 +339,10 @@ function onBodyClick(e) {
     case "open-weight": openWeightSheet(); break;
     case "weight-save": saveWeightSheet(); break;
     case "fav-quick-add": quickAddFavorite(actionEl.dataset.id); break;
+    case "open-targets": openTargetsSheet(); break;
+    case "targets-save": saveTargetsSheet(); break;
+    case "targets-reset": resetTargetsSheet(); break;
+    case "toggle-autolog": toggleAutoLog(); break;
     case "open-share": openShareSheet(actionEl.dataset.date, actionEl.dataset.id); break;
     case "do-share": doShare(actionEl); break;
     case "open-fav-manage": openFavManageSheet(); break;
@@ -471,6 +475,11 @@ function readProfileForm(form) {
   baseUrls[provider] = (fd.get("baseUrl") || "").trim() || meta.baseUrl || "";
 
   return {
+    // 設定フォームに出ていない項目(自分で決めた目標・自動記録の可否・目標体重)は
+    // ここで引き継がないと、プロフィールを保存し直したときに消えてしまう
+    customTargets: prev.customTargets || {},
+    autoLog: prev.autoLog,
+    targetWeight: prev.targetWeight,
     age: parseInt(fd.get("age"), 10),
     sex: fd.get("sex"),
     height: parseFloat(fd.get("height")),
@@ -701,10 +710,11 @@ function openKeyGuide(el) {
 
 // URLやキーの接頭辞だけ等幅にする(1回の置換で済ませ、入れ子にならないようにする)
 function formatGuideText(text) {
-  return escapeHtml(text).replace(
-    /(https?:\/\/[^\s、。]+|sk-ant-|sk-|AIza|:free)/g,
-    "<code>$1</code>"
-  );
+  // 先に安全化してから、**強調** と URL・キーの体裁を整える。
+  // 順番が逆だと、タグが打ち消されたり二重に囲まれたりする。
+  return escapeHtml(text)
+    .replace(/(https?:\/\/[^\s、。]+|sk-ant-|sk-|AIza|:free)/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 }
 
 function guideHtml(providerId) {
@@ -720,10 +730,34 @@ function guideHtml(providerId) {
     .map((n) => `<div class="guide-note ${n.tone === "warn" ? "warn" : ""}">${iconHtml(n.tone === "warn" ? "shield" : "info", 15)}<span>${formatGuideText(n.text)}</span></div>`)
     .join("");
 
+  // 手順に入る前の説明。ここで不安を解いておかないと、
+  // 手順がいくら丁寧でも「なんだか怖い」で離れてしまう。
+  const intro = g.intro
+    ? `<div class="guide-intro">
+         <h3>${escapeHtml(g.intro.title)}</h3>
+         ${g.intro.body.map((t) => `<p>${formatGuideText(t)}</p>`).join("")}
+       </div>`
+    : "";
+
+  // つまずいたときの逃げ道。詰まった人がここで戻ってこられるようにする。
+  const faq = g.faq
+    ? `<div class="guide-faq">
+         <div class="group-title">うまくいかないとき</div>
+         ${g.faq.map((f) => `
+           <details class="faq-item">
+             <summary>${escapeHtml(f.q)}</summary>
+             <div class="faq-a">${formatGuideText(f.a)}</div>
+           </details>`).join("")}
+       </div>`
+    : "";
+
   return `
     <p class="guide-lead">${formatGuideText(g.lead)}</p>
     <div style="margin-bottom:22px;"><span class="chip ${g.cost.tone === "paid" ? "paid" : ""}">${iconHtml(g.cost.tone === "paid" ? "info" : "check", 13)} ${escapeHtml(g.cost.text)}</span></div>
+    ${intro}
+    <div class="group-title" style="padding-left:0;">手順</div>
     <ol class="steps">${steps}</ol>
+    ${faq}
     <div class="guide-notes">${notes}</div>
   `;
 }
@@ -812,9 +846,18 @@ async function handleFileSelected(file) {
       state.capture.captureText = "";
     }
     render();
+    // ここが「ズボラでも続く」の要。撮った時点で人の仕事は終わりにする。
+    // 確認したい人は設定で止められるが、既定では自分から解析へ進む。
+    if (autoLogEnabled() && getAiConfig(state.profile).apiKey) doAnalyze();
   } catch (e) {
     showToast("写真を読み込めませんでした");
   }
+}
+
+// 撮ったら自動で記録するか。設定が無い間は「する」を既定にする。
+function autoLogEnabled() {
+  const p = state.profile || {};
+  return p.autoLog !== false;
 }
 
 async function doAnalyze() {
@@ -836,6 +879,11 @@ async function doAnalyze() {
       captureText: state.capture.captureText,
     });
     buzz();
+    if (autoLogEnabled()) {
+      state.capture.analyzing = false;
+      await doAddLog({ auto: true });
+      return;
+    }
   } catch (e) {
     state.capture.error = e.message || "解析中にエラーが発生しました";
   } finally {
@@ -912,17 +960,25 @@ function notifySaveResult(status) {
   }
 }
 
-async function doAddLog() {
-  const form = $("#result-form");
-  const fd = new FormData(form);
+async function doAddLog(opts = {}) {
+  const auto = opts.auto === true;
+  const r = state.capture.result || {};
+  // 自動記録のときは画面にフォームがまだ無いので、解析結果をそのまま使う。
+  // 手で確認する設定のときは、利用者が直した値を使う。
+  const form = auto ? null : $("#result-form");
+  const fd = form ? new FormData(form) : null;
+
   const nutrients = {};
   Object.keys(NUTRIENT_META).forEach((k) => {
-    nutrients[k] = Math.round((parseFloat(fd.get(k)) || 0) * 10) / 10;
+    const v = fd ? parseFloat(fd.get(k)) : (r.nutrients || {})[k];
+    nutrients[k] = Math.round((parseFloat(v) || 0) * 10) / 10;
   });
-  const name = (fd.get("mealName") || "食事").trim() || "食事";
-  const note = (fd.get("memo") || "").trim();
-  const meal = MEALS[fd.get("meal")] ? fd.get("meal") : guessMeal(new Date().getHours());
-  const r = state.capture.result || {};
+
+  const rawName = fd ? fd.get("mealName") : (r.items && r.items[0] && r.items[0].name);
+  const name = (rawName || "食事").trim() || "食事";
+  const note = fd ? (fd.get("memo") || "").trim() : "";
+  const mealRaw = fd ? fd.get("meal") : null;
+  const meal = MEALS[mealRaw] ? mealRaw : guessMeal(new Date().getHours());
 
   const thumb = state.capture.dataUrl ? await makeThumb(state.capture.dataUrl) : null;
   const entry = {
@@ -941,16 +997,26 @@ async function doAddLog() {
   const status = Storage.addLog(todayKey(), entry);
   notifySaveResult(status);
 
-  if (fd.get("saveFav")) {
+  if (fd && fd.get("saveFav")) {
     Storage.addFavorite({ id: newEntryId(), name, meal, nutrients, thumb, items: r.items || [] });
   }
   buzz();
+  state.capture = CAPTURE_INITIAL();
   setView("home");
-  // 撮った直後がいちばん共有したい瞬間なので、ここから1手で開けるようにする
-  showToast("記録に追加しました", {
-    actionLabel: "共有",
-    onAction: () => openShareSheet(todayKey(), entry.id),
-  });
+
+  if (auto) {
+    // 勝手に保存した以上、直す手段が同じ場所に無いと不安にさせる。
+    // 「間違っていたら直せる」と分かることが、自動記録を受け入れてもらう条件。
+    showToast(`${name} を記録しました`, {
+      actionLabel: "確認",
+      onAction: () => openEntrySheet(todayKey(), entry.id),
+    });
+  } else {
+    showToast("記録に追加しました", {
+      actionLabel: "共有",
+      onAction: () => openShareSheet(todayKey(), entry.id),
+    });
+  }
 }
 
 // ---------------- 記録の詳細(閲覧・編集・削除) ----------------
@@ -1321,6 +1387,18 @@ function openWeightSheet() {
         <input type="checkbox" id="ws-update-profile" checked>
         <span>プロフィールの体重も更新する(1日の目標に反映されます)</span>
       </label>
+      <div class="group" style="margin-top:22px;">
+        <div class="group-title">目指す体重(任意)</div>
+        <div class="list">
+          <div class="field-row">
+            <span class="field-label">目標</span>
+            <input type="number" id="ws-target" step="0.1" min="25" max="300" inputmode="decimal"
+                   value="${state.profile?.targetWeight ?? ""}" placeholder="決めていない">
+            <span class="field-unit">kg</span>
+          </div>
+        </div>
+        <div class="group-note" id="ws-target-note">${targetWeightNote(state.profile?.targetWeight)}</div>
+      </div>
       <div class="actions" style="margin-top:18px;">
         <button type="button" class="btn btn-primary" data-action="weight-save">保存する</button>
       </div>
@@ -1335,14 +1413,133 @@ function saveWeightSheet() {
   if (!Number.isFinite(v) || v < 25 || v > 300) { showToast("体重を正しく入力してください(25〜300kg)"); return; }
   const kg = Math.round(v * 10) / 10;
   Storage.setWeight(todayKey(), kg);
-  if ($("#ws-update-profile")?.checked && state.profile) {
-    state.profile.weight = kg;
+  if (state.profile) {
+    if ($("#ws-update-profile")?.checked) state.profile.weight = kg;
+    const tRaw = ($("#ws-target")?.value || "").trim();
+    const t = parseFloat(tRaw);
+    state.profile.targetWeight = tRaw === "" ? null : (Number.isFinite(t) && t >= 25 && t <= 300 ? Math.round(t * 10) / 10 : state.profile.targetWeight);
     Storage.saveProfile(state.profile);
   }
   buzz();
   closeSheet();
   render();
   showToast(`体重 ${kg} kg を記録しました`);
+}
+
+// 目指す体重についての一言。
+// 目標を持つこと自体は止めない(それは本人が決めることなので)。
+// ただし、痩せすぎにあたる値のときだけ、責めない言い方で一度だけ伝える。
+// 咎めるためではなく、知らずに設定している場合があるため。
+function targetWeightNote(target) {
+  const p = state.profile;
+  const t = parseFloat(target);
+  if (!Number.isFinite(t) || !p || !p.height) {
+    return "決めなくても構いません。決めると「トレンド」の体重に目安の線が出ます。";
+  }
+  const m = p.height / 100;
+  const bmi = t / (m * m);
+  const bmiText = `目標のBMIは ${Math.round(bmi * 10) / 10} です。`;
+  if (bmi < 18.5) {
+    return `${bmiText}<strong>これは「低体重(やせ)」にあたる範囲です。</strong>
+      目標を変えてほしいという意味ではありませんが、この範囲では月経が止まる、
+      骨が弱くなる、疲れやすくなるといったことが起こりやすくなります。
+      体調に変わったことがあれば、早めに医療機関にご相談ください。`;
+  }
+  if (bmi >= 25) {
+    return `${bmiText}無理のない範囲で、少しずつ進めてください。`;
+  }
+  return `${bmiText}標準の範囲(18.5〜25)に収まっています。`;
+}
+
+// 目標体重までの残りを、責めない言い方で返す
+function targetWeightProgressHtml(latest) {
+  const p = state.profile;
+  const t = parseFloat(p && p.targetWeight);
+  if (!Number.isFinite(t) || !Number.isFinite(latest)) return "";
+  const diff = Math.round((latest - t) * 10) / 10;
+  const abs = Math.abs(diff);
+  let text;
+  if (abs < 0.3) text = `目標の ${t} kg に届いています。`;
+  else if (diff > 0) text = `目標 ${t} kg まで あと ${abs} kg。`;
+  else text = `目標 ${t} kg まで あと ${abs} kg(増やす方向)。`;
+  return `<p class="muted" style="margin:10px 0 0;">${text}</p>`;
+}
+
+function toggleAutoLog() {
+  state.profile.autoLog = !autoLogEnabled();
+  Storage.saveProfile(state.profile);
+  buzz();
+  render();
+  showToast(autoLogEnabled() ? "撮ったらそのまま記録します" : "記録の前に確認します");
+}
+
+// ---------------- 目標を自分で決める ----------------
+
+// 既定値は厚生労働省「日本人の食事摂取基準(2025年版)」から算出している。
+// ここでは、それを自分の値に置き換えられるようにする。
+// 既定を消すわけではなく、空欄にすればいつでも戻る。
+function openTargetsSheet() {
+  const p = state.profile;
+  const dri = calcTargetsFromDri(p);
+  const custom = p.customTargets || {};
+
+  const rows = CUSTOMIZABLE_TARGETS.map((k) => {
+    const meta = NUTRIENT_META[k];
+    const v = custom[k];
+    return `
+      <div class="field-row">
+        <span class="field-label" style="min-width:118px;">${escapeHtml(meta.label)}</span>
+        <input type="number" step="0.1" min="0" id="tg-${k}" data-target-key="${k}"
+               inputmode="decimal" value="${v != null && v !== "" ? v : ""}"
+               placeholder="${dri[k]}">
+        <span class="field-unit">${escapeHtml(meta.unit)}</span>
+      </div>`;
+  }).join("");
+
+  openSheet("目標を自分で決める", `
+    <div id="targets-sheet">
+      <p class="guide-lead">
+        薄く表示されている数値が、いまのプロフィールから求めた既定値です。
+        自分で決めたい項目だけ入力してください。<strong>空欄のままなら既定値を使います。</strong>
+      </p>
+      <div class="group">
+        <div class="list">${rows}</div>
+        <div class="group-note">
+          既定値は厚生労働省「日本人の食事摂取基準(2025年版)」に基づく、
+          健康な人の集団に向けた目安です。持病がある、妊娠・授乳中である、
+          運動量が特別に多いなど、事情がある場合はご自身の値のほうが実態に合います。
+          <strong>治療のための食事制限は、必ず主治医や管理栄養士の指示に従ってください。</strong>
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn btn-primary" data-action="targets-save">保存する</button>
+        <button type="button" class="btn btn-plain" data-action="targets-reset">すべて既定値に戻す</button>
+      </div>
+    </div>
+  `);
+}
+
+function saveTargetsSheet() {
+  const custom = {};
+  CUSTOMIZABLE_TARGETS.forEach((k) => {
+    const el = $(`#tg-${k}`);
+    const raw = el ? el.value.trim() : "";
+    if (raw === "") return;
+    const v = parseFloat(raw);
+    if (Number.isFinite(v) && v > 0) custom[k] = Math.round(v * 10) / 10;
+  });
+  state.profile.customTargets = custom;
+  Storage.saveProfile(state.profile);
+  buzz();
+  closeSheet();
+  render();
+  const n = Object.keys(custom).length;
+  showToast(n === 0 ? "すべて既定値に戻しました" : `${n}件の目標を自分の値にしました`);
+}
+
+function resetTargetsSheet() {
+  CUSTOMIZABLE_TARGETS.forEach((k) => { const el = $(`#tg-${k}`); if (el) el.value = ""; });
+  showToast("入力欄を空にしました。保存すると既定値に戻ります");
 }
 
 // ---------------- データの書き出し・読み込み ----------------
@@ -1700,16 +1897,19 @@ function nutrientRow(key, consumed, target) {
   const pct = target > 0 ? Math.min(100, Math.round((consumed / target) * 100)) : 0;
   const over = consumed > target;
   const remain = Math.max(0, Math.round((target - consumed) * 10) / 10);
+  // 「超過」という言い方はしない。数字は出すが、咎める言葉は使わない(減点しない方針)。
   const remainLabel = meta.isLimit
-    ? (over ? `${Math.round((consumed - target) * 10) / 10}${meta.unit} 超過` : `あと ${remain}${meta.unit}`)
+    ? (over ? `+${Math.round((consumed - target) * 10) / 10}${meta.unit}` : `あと ${remain}${meta.unit}`)
     : (over ? "達成" : `あと ${remain}${meta.unit}`);
+  // 目標に届いたことは、警告ではなく達成として示す
+  const barClass = meta.isLimit ? (over ? "over" : "") : (over ? "done" : "");
   return `
     <div class="nutrient">
       <div class="nutrient-head">
         <span class="nutrient-name">${nutrientIconHtml(key)} ${meta.label}</span>
         <span class="nutrient-val">${Math.round(consumed * 10) / 10} / ${target}${meta.unit} ・ ${remainLabel}</span>
       </div>
-      <div class="bar ${over ? "over" : ""}"><span style="width:${pct}%"></span></div>
+      <div class="bar ${barClass}"><span style="width:${pct}%"></span></div>
     </div>
   `;
 }
@@ -1772,10 +1972,9 @@ function weekStripHtml(targets) {
     .map((d) => {
       const pct = Math.min(100, Math.round(((d.sum.calories || 0) / targets.calories) * 100));
       const today = d.key === todayKey();
-      const over = d.sum.calories > targets.calories;
       return `
         <div class="wd ${today ? "today" : ""}">
-          <div class="wd-bar"><span class="${over ? "over" : ""}" style="height:${d.count ? Math.max(pct, 6) : 0}%"></span></div>
+          <div class="wd-bar"><span style="height:${d.count ? Math.max(pct, 6) : 0}%"></span></div>
           <span class="wd-label">${weekdayChar(d.key)}</span>
         </div>`;
     })
@@ -1880,7 +2079,8 @@ function renderTrends() {
     label: n <= 7 ? weekdayChar(d.key) : formatDateShort(d.key),
     v: Math.round(d.sum.calories || 0),
     today: d.key === todayKey(),
-    over: d.sum.calories > targets.calories,
+    // 目標より多い日を色で咎めない(減点しない方針)
+    over: false,
   }));
   const avgKcal = recorded.length
     ? Math.round(recorded.reduce((s, d) => s + d.sum.calories, 0) / recorded.length)
@@ -1918,6 +2118,7 @@ function renderTrends() {
       ${wPoints.length >= 2
         ? weightLineChart(wPoints)
         : `<p class="muted" style="margin:4px 0 14px;">${wPoints.length === 1 ? "あと1回記録すると、推移のグラフが出ます。" : "体重を記録すると、ここに推移が表示されます。"}</p>`}
+      ${targetWeightProgressHtml(wPoints.length ? wPoints[wPoints.length - 1].kg : NaN)}
       <button type="button" class="btn btn-tinted btn-sm" data-action="open-weight" style="margin-top:${wPoints.length >= 2 ? "12px" : "0"};">${iconHtml("scale", 15)} 体重を記録</button>
     </div>`;
 
@@ -1937,7 +2138,7 @@ function renderTrends() {
             <span class="nutrient-name">${nutrientIconHtml(k)} ${NUTRIENT_META[k].label}</span>
             <span class="nutrient-val">平均 ${Math.round(avg * 10) / 10}${NUTRIENT_META[k].unit} ・ ${pct}%</span>
           </div>
-          <div class="bar"><span style="width:${Math.min(100, pct)}%"></span></div>
+          <div class="bar ${pct >= 100 ? "done" : ""}"><span style="width:${Math.min(100, pct)}%"></span></div>
         </div>`;
     }).join("");
     const limits = ["salt", "saturatedFat"].map((k) => {
@@ -2348,6 +2549,7 @@ function renderSettings() {
   const cfg = getAiConfig(p);
   const guide = getProviderGuide(cfg.providerId);
   const favCount = Storage.getFavorites().length;
+  const customCount = customizedTargetKeys(p).length;
 
   return `
     <div class="nav-bar"><h1 class="large-title">設定</h1></div>
@@ -2371,6 +2573,14 @@ function renderSettings() {
           </span>
           <span class="row-chevron">${iconHtml("chevron", 14)}</span>
         </button>
+        <button type="button" class="row with-icon tappable" data-action="open-targets">
+          <span class="row-icon">${iconHtml("sparkle", 16)}</span>
+          <span class="row-main">
+            <span class="row-label">目標を自分で決める</span>
+            <span class="row-sub">${customCount ? `${customCount}件を自分の値にしています` : "いまは既定値を使っています"}</span>
+          </span>
+          <span class="row-chevron">${iconHtml("chevron", 14)}</span>
+        </button>
         <button type="button" class="row with-icon tappable" data-action="open-basis">
           <span class="row-icon neutral">${iconHtml("info", 16)}</span>
           <span class="row-main">
@@ -2383,6 +2593,24 @@ function renderSettings() {
       <div class="group-note">
         活動レベル「${ACTIVITY_LEVELS[p.activity].label}」・目標「${(GOALS[p.goal] || GOALS.maintain).label}」。
         目標値は厚生労働省「日本人の食事摂取基準(2025年版)」に基づいています。
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">記録のしかた</div>
+      <div class="list">
+        <button type="button" class="row with-icon tappable" data-action="toggle-autolog">
+          <span class="row-icon">${iconHtml("camera", 16)}</span>
+          <span class="row-main">
+            <span class="row-label">撮ったらそのまま記録する</span>
+            <span class="row-sub">${autoLogEnabled() ? "記録まで自動で進みます" : "確かめてから記録します"}</span>
+          </span>
+          <span class="row-value">${autoLogEnabled() ? "オン" : "オフ"}</span>
+        </button>
+      </div>
+      <div class="group-note">
+        オンのときも、記録したあとに出る「確認」から中身を直せます。
+        間違っていてもその場で直せるので、まずはオンのままお試しください。
       </div>
     </div>
 

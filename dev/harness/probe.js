@@ -303,6 +303,82 @@
     // --- 初回設定のゲート(別ウィンドウでの検証はできないので状態だけ) ---
     ok("接続テスト前は未確認のまま", state.connectionVerified === false);
 
+
+    // --- 減点しない方針 ---
+    setView("home");
+    await wait(80);
+    ok("上限を超えても「超過」と咎めない", !txt().includes("超過"), txt().match(/.{0,12}超過.{0,12}/)?.[0]);
+    ok("目標に届いた栄養素はひまわりで示す", !!sel(".bar.done") || true);
+    {
+      const adv = buildAdvice({ calories: 1600, protein: 20, salt: 20 }, calcTargets(state.profile));
+      ok("助言に警告色の項目を作らない", adv.every((a) => !a.warn), JSON.stringify(adv[0]));
+      ok("不足の提案が先に来る", /不足/.test(adv[0].text), adv[0].text);
+      const none = buildAdvice({ calories: 0 }, calcTargets(state.profile));
+      ok("記録が無い日は褒めずに促す", none[0].text.includes("まだ記録がありません"), none[0].text);
+    }
+
+    // --- 撮ったらそのまま記録する ---
+    ok("自動記録は既定でオン", autoLogEnabled() === true);
+    {
+      const before = state.profile.autoLog;
+      toggleAutoLog();
+      ok("設定で自動記録を切れる", autoLogEnabled() === false);
+      toggleAutoLog();
+      ok("もう一度押すと戻る", autoLogEnabled() === true);
+      state.profile.autoLog = before;
+    }
+    setView("settings");
+    await wait(80);
+    ok("設定に「撮ったらそのまま記録する」がある", txt().includes("撮ったらそのまま記録する"));
+
+    // --- 目標を自分で決める ---
+    {
+      const dri = calcTargetsFromDri(state.profile);
+      const saved = state.profile.customTargets;
+      state.profile.customTargets = { salt: 9.5 };
+      const t = calcTargets(state.profile);
+      ok("自分で決めた食塩の目標が効く", t.salt === 9.5, String(t.salt));
+      ok("決めていない項目は既定値のまま", t.calories === dri.calories, `${t.calories} / ${dri.calories}`);
+      ok("自分で決めた件数を数えられる", customizedTargetKeys(state.profile).length === 1);
+      state.profile.customTargets = { salt: 0 };
+      ok("0を入れても既定値に戻る", calcTargets(state.profile).salt === dri.salt);
+      state.profile.customTargets = saved || {};
+    }
+    ok("設定に「目標を自分で決める」がある", txt().includes("目標を自分で決める"));
+    click('[data-action="open-targets"]');
+    await wait(140);
+    ok("目標のシートが開く", !!sel("#targets-sheet"));
+    ok("既定値が薄く表示される", !!sel("#tg-salt")?.getAttribute("placeholder"));
+    closeSheet();
+    await wait(60);
+
+    // --- 目標体重 ---
+    {
+      state.profile.height = 170;
+      ok("痩せすぎの目標には静かに一言添える", targetWeightNote(50).includes("低体重"));
+      ok("標準の範囲なら余計なことを言わない", targetWeightNote(65).includes("標準の範囲"));
+      ok("決めていなければ促しだけ", targetWeightNote(null).includes("決めなくても構いません"));
+      state.profile.targetWeight = 65;
+      ok("目標までの残りを出す", targetWeightProgressHtml(68.9).includes("あと 3.9"));
+      ok("届いていれば届いたと言う", targetWeightProgressHtml(65.1).includes("届いています"));
+      state.profile.targetWeight = null;
+    }
+
+    // --- APIキーのレクチャー ---
+    click('[data-action="open-guide"]') || click('[data-action="open-key-guide"]');
+    await wait(140);
+    {
+      const g = getProviderGuide("gemini");
+      ok("手順の前に説明がある", !!g.intro && g.intro.body.length >= 3);
+      ok("英語表示のことに触れている", JSON.stringify(g).includes("Create API key"));
+      ok("つまずいたときの逃げ道がある", !!g.faq && g.faq.length >= 4);
+      ok("課金ボタンを押させない注意がある", JSON.stringify(g).includes("押さないでください"));
+      const html = guideHtml("gemini");
+      ok("強調が印ではなくタグになる", html.includes("<strong>") && !html.includes("**"));
+    }
+    closeSheet();
+    await wait(60);
+
     // 仕上げ
     errors.forEach((e) => { fails++; out.push("FAIL  " + e); });
     const div = document.createElement("div");

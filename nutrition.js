@@ -195,7 +195,37 @@ function targetBasis(profile) {
   };
 }
 
+// 利用者が自分で決めてよい目標。
+// 既定値は厚生労働省「日本人の食事摂取基準(2025年版)」から算出するが、
+// ここに挙げた項目は設定で上書きできる。
+// 上書きは「自分の身体のことは自分が決める」という考え方によるもので、
+// 既定値を消すわけではない(空にすればいつでも既定値に戻る)。
+const CUSTOMIZABLE_TARGETS = [
+  "calories", "protein", "fat", "carb", "fiber", "salt",
+  "calcium", "iron", "vitaminC", "potassium",
+];
+
 function calcTargets(profile) {
+  const base = calcTargetsFromDri(profile);
+  const custom = (profile && profile.customTargets) || {};
+  CUSTOMIZABLE_TARGETS.forEach((key) => {
+    const v = parseFloat(custom[key]);
+    // 0や負の値は「制限なし」ではなく入力の誤りとみなし、既定値のままにする
+    if (Number.isFinite(v) && v > 0) base[key] = v;
+  });
+  return base;
+}
+
+// どの項目が既定値から変えられているか(画面で「自分で決めた」と示すため)
+function customizedTargetKeys(profile) {
+  const custom = (profile && profile.customTargets) || {};
+  return CUSTOMIZABLE_TARGETS.filter((k) => {
+    const v = parseFloat(custom[k]);
+    return Number.isFinite(v) && v > 0;
+  });
+}
+
+function calcTargetsFromDri(profile) {
   const sex = profile.sex === "female" ? "female" : "male";
   const i = ageBandIndex(profile.age);
   const activity = ACTIVITY_LEVELS[profile.activity] ? profile.activity : "normal";
@@ -284,34 +314,56 @@ const ADVICE_FOOD = {
   zinc:       { text: "亜鉛が不足気味です。牡蠣・牛肉・レバー・チーズなどを取り入れましょう。",                       iconKey: "zinc" },
 };
 
-const OVER_WARN = {
-  calories:     { text: "エネルギーが目標を超えています。次の食事は軽めを意識しましょう。",         iconKey: "calories", warn: true },
-  fat:          { text: "脂質が目標を超えています。揚げ物や脂の多い肉は控えめに。",                 iconKey: "fat", warn: true },
-  salt:         { text: "食塩相当量が目標量を超えています。汁物や加工食品は控えめに。",             iconKey: "salt", warn: true },
-  carb:         { text: "炭水化物が目標を超えています。主食の量を少し調整してみましょう。",         iconKey: "carb", warn: true },
-  saturatedFat: { text: "飽和脂肪酸が目標量を超えています。揚げ物やバター、脂身の多い肉は控えめに。", iconKey: "saturatedFat", warn: true },
+// ---- 摂りすぎについて ----
+// このアプリは減点法を採らない。「食べ過ぎ」を叱ることはしない。
+// 食事の記録が続かなくなる最大の理由は、記録すると責められることだからで、
+// 続かなければ栄養は改善しない。だから咎める代わりに、次に足すものを示す。
+//
+// ただし、食塩と飽和脂肪酸は「多く摂ると健康を損ねる」性質の栄養素で、
+// 体型の話ではない。ここだけは事実として穏やかに伝える。
+// エネルギー・脂質・炭水化物の超過は、あえて何も言わない。
+const OVER_NOTE = {
+  salt:         { text: "今日は塩分がやや多めです。明日は汁物を半分にする、くらいで十分です。", iconKey: "salt" },
+  saturatedFat: { text: "飽和脂肪酸がやや多めです。魚や植物油に振り替えると和らぎます。",       iconKey: "saturatedFat" },
 };
+
+// よく摂れているときに返す言葉。足りない項目が無いときだけ使う。
+const PRAISE = [
+  { text: "よく摂れています。この調子で大丈夫です。", iconKey: "check" },
+  { text: "栄養のバランスが取れています。よくできています。", iconKey: "check" },
+];
 
 function buildAdvice(consumed, targets) {
   const items = [];
 
-  // 摂りすぎ警告(優先度高め)
-  ["calories", "salt", "fat", "carb", "saturatedFat"].forEach((key) => {
-    const c = consumed[key] || 0;
-    const t = targets[key];
-    if (t && key === "calories" && c > t * 1.05) items.push(OVER_WARN.calories);
-    else if (t && key !== "calories" && c > t) items.push(OVER_WARN[key]);
-  });
+  // まだ何も食べていない日に「不足しています」を並べない。
+  // 朝いちばんに開いた人へ16項目の不足を突きつけるのは、
+  // 減点しない方針のちょうど正反対になる。
+  if (!(consumed.calories > 0)) {
+    return [{ text: "今日はまだ記録がありません。写真を1枚撮るところから。", iconKey: "camera" }];
+  }
 
-  // 不足アドバイス
+  // 1) 足りないものを補う提案。これが主役なので必ず先に出す。
   Object.keys(ADVICE_FOOD).forEach((key) => {
     const c = consumed[key] || 0;
     const t = targets[key];
     if (t && c < t * 0.6) items.push(ADVICE_FOOD[key]);
   });
 
+  // 2) 健康上の意味がある2つだけ、控えめに添える。色は変えない。
+  ["salt", "saturatedFat"].forEach((key) => {
+    const c = consumed[key] || 0;
+    const t = targets[key];
+    // 目標をわずかに超えた程度では何も言わない。1.15倍を超えたときだけ。
+    if (t && c > t * 1.15) items.push(OVER_NOTE[key]);
+  });
+
   if (items.length === 0) {
-    items.push({ text: "ここまでの食事は栄養バランスが良好です。この調子で続けましょう。", iconKey: "check" });
+    // 記録がまだ無い日に「よくできています」と言うと白々しいので、
+    // 何か食べている日にだけ褒める。
+    const ate = (consumed.calories || 0) > 0;
+    items.push(ate ? PRAISE[0] : { text: "今日はまだ記録がありません。写真を1枚撮るところから。", iconKey: "camera" });
   }
   return items.slice(0, 5);
 }
+

@@ -11,34 +11,52 @@
    --------------------------------------------------------------- */
 
 :root {
-  color-scheme: light dark;
+  /* 端末のダークモードに追従しない。「only」を付けるのが要点で、
+     Android Chrome の自動ダークテーマによる強制暗転をこれで抑える。
+     暗いところで見ても、明るいところで見ても、同じ配色で出る。 */
+  color-scheme: only light;
 
-  /* 面と文字 —— ほぼ無彩色 */
-  --bg: #f5f5f7;
+  /* ---- 面 ----
+     地は温かい生成り。その上に白いカードを置く。 */
+  --bg: #faf5ec;
   --surface: #ffffff;
+  --surface-2: #fbf7ef;    /* カードの中の、一段沈んだ面 */
   --surface-raised: #ffffff;
-  --fill: rgba(118, 118, 128, 0.10);
-  --fill-strong: rgba(118, 118, 128, 0.16);
-  --text: #1d1d1f;
-  --text-2: #6e6e73;
-  --text-3: #8e8e93;
-  --separator: rgba(60, 60, 67, 0.13);
+  --fill: rgba(138, 118, 88, 0.10);
+  --fill-strong: rgba(138, 118, 88, 0.18);
 
-  /* アクセントはこのアプリの緑 */
+  /* ---- 文字 ----
+     黒ではなく、地の生成りに合う温かい焦茶にする。 */
+  --text: #3d3226;
+  --text-2: #6b5c48;
+  --text-3: #8a7c68;
+  --separator: rgba(122, 102, 72, 0.18);
+
+  /* ---- 操作色 ---- */
   --accent: #3f6b42;
   --accent-hi: #5c8a5c;
-  --accent-soft: rgba(63, 107, 66, 0.10);
+  --accent-soft: #e7f0e2;
 
-  /* データカラー(P/F/C)。グラフとバーにだけ使う */
-  --c-protein: #007aff;   /* systemBlue */
-  --c-fat: #ffcc00;       /* systemYellow */
-  --c-carb: #30b0c7;      /* systemTeal */
+  /* ---- ひまわり ----
+     このアプリの主役の色。「達成した」「よくできている」を表すときに使う。
+     叱るためには使わない(減点しない方針)。
+     --sun は面を塗るとき、--sun-deep は線や文字にするときに使い分ける。
+     淡い黄は白の上で沈むので、細い線と文字は必ず --sun-deep を使うこと。 */
+  --sun: #f2b233;        /* 面を塗るとき(バッジの地など)。上に置く文字は --text */
+  --sun-line: #c28308;   /* 線・リング・バー。白の上で 3.2:1 */
+  --sun-deep: #8f620a;   /* 文字。白の上で 5.4:1 */
+  --sun-soft: #fdf1d8;   /* ごく淡い地 */
 
-  /* 状態を表すときだけ使う色 */
-  --warn: #c77400;
-  --warn-soft: rgba(255, 149, 0, 0.12);
-  --danger: #d70015;
-  --link: #0066cc;
+  /* ---- データカラー(P/F/C)。グラフとバーとドットにだけ使う ---- */
+  --c-protein: #b0512f;    /* 赤茶(肉・豆) */
+  --c-fat: #b87f1c;        /* 山吹(油・種実) */
+  --c-carb: #7c9a3c;       /* 若草(穀物) */
+
+  /* ---- 状態を表すときだけ使う色 ---- */
+  --warn: #b06a15;
+  --warn-soft: #fdf1d8;
+  --danger: #b04a3d;
+  --link: #3f6b42;
 
   /* 角丸: 10 / 12 / 16 / 22 */
   --r-sm: 10px;
@@ -46,7 +64,7 @@
   --r-lg: 16px;
   --r-xl: 22px;
 
-  /* セグメントコントロールの選択中の面。ライトでは白 */
+  /* セグメントコントロールの選択中の面 */
   --seg-on: #ffffff;
 
   --font-text: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", Inter,
@@ -60,45 +78,6 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-top: env(safe-area-inset-top, 0px);
   --tabbar-h: 56px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #000000;
-    --surface: #1c1c1e;
-    --surface-raised: #2c2c2e;
-    --fill: rgba(118, 118, 128, 0.24);
-    --fill-strong: rgba(118, 118, 128, 0.36);
-    --text: #f5f5f7;
-    --text-2: #a1a1a6;
-    --text-3: #8e8e93;
-    --separator: rgba(84, 84, 88, 0.65);
-
-    --accent: #6bae6f;
-    --accent-hi: #8cc78f;
-    --accent-soft: rgba(107, 174, 111, 0.16);
-
-    --c-protein: #0a84ff;
-    --c-fat: #ffd60a;
-    --c-carb: #40c8e0;
-
-    --warn: #ff9f0a;
-    --warn-soft: rgba(255, 159, 10, 0.18);
-    --danger: #ff453a;
-    --link: #2997ff;
-
-    /* 暗い面では、選ばれたセグメントは面より「明るく」しないと沈んで見える。
-       置かれる面(黒の画面・パネル・シート)がどれでも浮くよう、不透明色にする。 */
-    --seg-on: #636366;
-  }
-}
-
-/* 対応ブラウザでは角丸を本物のスクワークルにする */
-@supports (corner-shape: squircle) {
-  .list, .btn, .panel, .sheet, .photo-frame, .chip, .segmented, .thumb, .badge,
-  .search-wrap, .entry-photo {
-    corner-shape: squircle;
-  }
 }
 
 * { box-sizing: border-box; }
@@ -234,7 +213,7 @@ a:hover { text-decoration: underline; }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
   -webkit-backdrop-filter: saturate(180%) blur(22px);
   backdrop-filter: saturate(180%) blur(22px);
   opacity: 0;
@@ -412,8 +391,8 @@ a:hover { text-decoration: underline; }
 .ring { position: relative; width: 196px; height: 196px; }
 .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); display: block; }
 .ring .track { stroke: var(--fill); }
-.ring .fill { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset 0.6s cubic-bezier(0.32, 0.72, 0, 1); }
-.ring.over .fill { stroke: var(--warn); }
+.ring .fill { stroke: var(--sun-line); stroke-linecap: round; transition: stroke-dashoffset 0.6s cubic-bezier(0.32, 0.72, 0, 1); }
+/* 目標を超えても色を変えて咎めない。満ちるだけにする(減点しない方針) */
 .ring-center {
   position: absolute;
   inset: 0;
@@ -484,6 +463,8 @@ a:hover { text-decoration: underline; }
 .bar { height: 5px; border-radius: 999px; background: var(--fill); overflow: hidden; }
 .bar > span { display: block; height: 100%; border-radius: 999px; background: var(--accent); transition: width 0.5s cubic-bezier(0.32, 0.72, 0, 1); }
 .bar.over > span { background: var(--warn); }
+/* 目標に届いた栄養素。ひまわりで「よくできた」を表す(咎めるためではない) */
+.bar.done > span { background: var(--sun); }
 .bar.slim { height: 4px; }
 .bar.c-protein > span { background: var(--c-protein); }
 .bar.c-fat > span { background: var(--c-fat); }
@@ -1111,11 +1092,7 @@ input[type="file"] { display: none; }
 }
 .sheet-head h2 { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
 .sheet-body { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 4px 20px 28px; }
-.sheet-body .list { background: var(--bg); }
-@media (prefers-color-scheme: dark) {
-  .sheet-body .list { background: var(--surface-raised); }
-}
-
+.sheet-body .list { background: var(--surface-2); }
 @media (min-width: 600px) {
   #sheet-root { align-items: center; justify-content: center; padding: 24px; }
   .sheet {
@@ -1133,6 +1110,49 @@ input[type="file"] { display: none; }
 
 /* 手順書の中身 */
 .guide-lead { font-size: 15px; color: var(--text-2); line-height: 1.6; margin-bottom: 18px; }
+
+/* 手順に入る前の説明。読み飛ばされないよう、淡い色の面に載せる */
+.guide-intro {
+  background: var(--sun-soft);
+  border-radius: var(--r-lg);
+  padding: 18px 18px 14px;
+  margin-bottom: 24px;
+}
+.guide-intro h3 { font-size: 15px; font-weight: 700; margin-bottom: 10px; color: var(--sun-deep); }
+.guide-intro p { font-size: 14px; line-height: 1.65; color: var(--text); margin-bottom: 10px; }
+.guide-intro p:last-child { margin-bottom: 0; }
+
+/* つまずいたときの逃げ道。たたんでおいて、必要な人だけ開く */
+.guide-faq { margin-top: 26px; }
+.faq-item {
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.faq-item summary {
+  cursor: pointer;
+  padding: 13px 16px;
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.45;
+  list-style: none;
+}
+.faq-item summary::-webkit-details-marker { display: none; }
+.faq-item summary::after {
+  content: "＋";
+  float: right;
+  color: var(--text-3);
+  font-weight: 400;
+  margin-left: 10px;
+}
+.faq-item[open] summary::after { content: "−"; }
+.faq-a {
+  padding: 0 16px 14px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text-2);
+}
 .steps { list-style: none; margin: 0 0 8px; padding: 0; counter-reset: step; }
 .steps li {
   position: relative;
@@ -1170,7 +1190,10 @@ input[type="file"] { display: none; }
 .steps li:last-child { padding-bottom: 4px; }
 .steps li:last-child::after { display: none; }
 .steps .step-link {
-  display: inline-flex;
+  /* 文の続きに流し込むと本文と competing して読みにくいので、必ず行を改めて置く。
+     ここは離脱が起きやすい導線なので、押す場所が一目で分かることを優先する。 */
+  display: flex;
+  width: fit-content;
   align-items: center;
   gap: 6px;
   margin-top: 10px;
@@ -1216,7 +1239,7 @@ input[type="file"] { display: none; }
   height: calc(var(--tabbar-h) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
   background: var(--surface);
-  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
   -webkit-backdrop-filter: saturate(180%) blur(24px);
   backdrop-filter: saturate(180%) blur(24px);
   display: flex;
@@ -1264,7 +1287,7 @@ input[type="file"] { display: none; }
   bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 18px);
   left: 50%;
   transform: translateX(-50%) translateY(8px);
-  background: rgba(28, 28, 30, 0.92);
+  background: rgba(61, 50, 38, 0.94);
   -webkit-backdrop-filter: blur(20px);
   backdrop-filter: blur(20px);
   color: #fff;
@@ -1279,9 +1302,6 @@ input[type="file"] { display: none; }
   max-width: calc(100vw - 48px);
   text-align: center;
 }
-@media (prefers-color-scheme: dark) {
-  .toast { background: rgba(72, 72, 74, 0.92); }
-}
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast.has-action {
   pointer-events: auto;
@@ -1293,7 +1313,7 @@ input[type="file"] { display: none; }
 .toast-action {
   border: none;
   background: none;
-  color: #8cc78f;
+  color: var(--sun);
   font-family: var(--font-text);
   font-size: 15px;
   font-weight: 700;

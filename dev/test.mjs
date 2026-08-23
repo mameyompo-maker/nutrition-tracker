@@ -17,7 +17,7 @@ const verbose = process.argv.includes("--verbose") || process.argv.includes("-v"
 
 // 端末のダークモードに関わらず配色を固定する変更(v4 フェーズA)を入れたら、
 // ここを true にする。ライトとダークで同じ値になることを検査するようになる。
-const EXPECT_FIXED_THEME = false;
+const EXPECT_FIXED_THEME = true;
 
 // 算出値の一覧から、キーがちょうど一致する行の値を取り出す。
 // 前方一致にすると "--bg" が "--bg-deep" を拾ってしまうので、必ず完全一致で見る。

@@ -1,6 +1,6 @@
 {
   "name": "nutrition-tracker",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "description": "食事の写真から栄養素を推定し、食事摂取基準と比べるPWA。サーバーもビルド工程も外部ライブラリも持たない",
   "license": "MIT",
   "private": true,

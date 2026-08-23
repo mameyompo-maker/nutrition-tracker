@@ -16,15 +16,16 @@ const SHARE_PAD = 72;
 
 // このアプリの配色。style.css のトークンと合わせてある
 const SHARE_COLORS = {
-  bg: "#FFFCF4",
-  ink: "#1D1D1F",
-  ink2: "#6E6E73",
-  ink3: "#9A9A9F",
+  bg: "#FFFDF8",
+  ink: "#3D3226",
+  ink2: "#6B5C48",
+  ink3: "#8A7C68",
   accent: "#3F6B42",
-  line: "rgba(60,60,67,0.14)",
-  protein: "#007AFF",
-  fat: "#FFCC00",
-  carb: "#30B0C7",
+  sun: "#C28308",
+  line: "rgba(122,102,72,0.18)",
+  protein: "#B0512F",
+  fat: "#B87F1C",
+  carb: "#7C9A3C",
 };
 
 const SHARE_FONT = `-apple-system, "SF Pro Text", "Hiragino Sans", "Yu Gothic", Meiryo, sans-serif`;
