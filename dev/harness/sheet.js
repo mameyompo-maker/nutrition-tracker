@@ -10,6 +10,8 @@
     else if (which === "guide") { openSheet("Google AI Studio APIキーの取得", guideHtml("gemini")); }
     else if (which === "manual") { openManualAddSheet(); }
     else if (which === "weight") { openWeightSheet(); }
+    else if (which === "mealplan") { openMealPlanSheet(); }
+    else if (which === "targets") { openTargetsSheet(); }
     else if (which === "share") {
       const k = todayKey();
       openShareSheet(k, Storage.getLogsForDate(k).slice(-1)[0].id);

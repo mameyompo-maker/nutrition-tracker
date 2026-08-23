@@ -4,7 +4,7 @@
 // アセットを追加したら ASSETS と CACHE_NAME の版を必ず上げること。
 // 忘れると利用者の端末に古いファイルが残る。
 
-const CACHE_NAME = "nutriapp-shell-v11";
+const CACHE_NAME = "nutriapp-shell-v12";
 
 // 共有シートから渡された写真を、画面へ引き渡すまでの一時置き場。
 // シェルのキャッシュとは別に持ち、版を上げても消さない。

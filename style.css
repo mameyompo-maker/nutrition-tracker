@@ -82,6 +82,10 @@
 
 * { box-sizing: border-box; }
 
+/* チェックとラジオは、放っておくとブラウザ既定の青で出る。
+   配色を固定した意味が無くなるので、ここで揃える。 */
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+
 html, body {
   margin: 0;
   padding: 0;
@@ -463,6 +467,22 @@ a:hover { text-decoration: underline; }
 .bar { height: 5px; border-radius: 999px; background: var(--fill); overflow: hidden; }
 .bar > span { display: block; height: 100%; border-radius: 999px; background: var(--accent); transition: width 0.5s cubic-bezier(0.32, 0.72, 0, 1); }
 .bar.over > span { background: var(--warn); }
+/* 決めた時刻を過ぎたときの声かけ。
+   目に入る必要はあるが、赤く光って責めるものにはしない。 */
+.nudge {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--sun-soft);
+  border-radius: var(--r-lg);
+  padding: 14px 16px;
+  margin: 4px 0 18px;
+}
+.nudge-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.nudge-title { font-size: 15px; font-weight: 600; line-height: 1.35; }
+.nudge-sub { font-size: 13px; color: var(--text-2); line-height: 1.45; }
+.nudge .btn { flex-shrink: 0; }
+
 /* 目標に届いた栄養素。ひまわりで「よくできた」を表す(咎めるためではない) */
 .bar.done > span { background: var(--sun); }
 .bar.slim { height: 4px; }

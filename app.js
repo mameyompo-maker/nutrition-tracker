@@ -371,6 +371,11 @@ function onBodyClick(e) {
     case "open-weight": openWeightSheet(); break;
     case "weight-save": saveWeightSheet(); break;
     case "fav-quick-add": quickAddFavorite(actionEl.dataset.id); break;
+    case "open-mealplan": openMealPlanSheet(); break;
+    case "mealplan-save": saveMealPlanSheet(); break;
+    case "mealplan-off": clearMealPlan(); break;
+    case "mealplan-ics": downloadMealIcs(); break;
+    case "nudge-record": setView("capture"); break;
     case "backfill":
       setView("capture");
       state.logDate = actionEl.dataset.date;
@@ -429,6 +434,7 @@ function onBodyChange(e) {
   }
   // 食事区分などのセグメント選択の見た目を切り替える
   if (e.target.matches(".segmented input")) {
+    if (name === "mp-preset") updateMealPlanRows();
     const seg = e.target.closest(".segmented");
     $$("label.seg", seg).forEach((l) => l.classList.toggle("on", $("input", l).checked));
     return;
@@ -520,6 +526,7 @@ function readProfileForm(form) {
     customTargets: prev.customTargets || {},
     autoLog: prev.autoLog,
     instantCamera: prev.instantCamera,
+    mealPlan: prev.mealPlan,
     targetWeight: prev.targetWeight,
     age: parseInt(fd.get("age"), 10),
     sex: fd.get("sex"),
@@ -1530,6 +1537,269 @@ function targetWeightProgressHtml(latest) {
   return `<p class="muted" style="margin:10px 0 0;">${text}</p>`;
 }
 
+// ---------------- 食事の時間割 ----------------
+//
+// 続けるためには「いつ記録するか」が先に決まっている必要がある。
+// 決めていないと、思い出したときにしか記録されず、たいてい思い出さない。
+//
+// 通知について:
+// 端末だけで時刻を指定して通知を出す仕組み(Notification Triggers API)は
+// Googleが開発を終了しており、Chromeのstableでは使えない。
+// 本物のプッシュ通知には配信サーバーが要る。
+// そこでサーバーを持たない今は、**端末のカレンダーに予定として書き出し、
+// カレンダーアプリに鳴らしてもらう**。これなら無料で、iOSでもAndroidでも確実に鳴る。
+
+const MEAL_PLAN_PRESETS = {
+  two:   { label: "1日2食", meals: ["lunch", "dinner"] },
+  three: { label: "1日3食", meals: ["breakfast", "lunch", "dinner"] },
+  four:  { label: "3食 + 間食", meals: ["breakfast", "lunch", "snack", "dinner"] },
+};
+
+const DEFAULT_MEAL_TIMES = {
+  breakfast: "07:30",
+  lunch: "12:00",
+  snack: "15:30",
+  dinner: "19:00",
+};
+
+function mealPlan() {
+  const p = state.profile || {};
+  const saved = p.mealPlan;
+  if (saved && Array.isArray(saved.meals) && saved.meals.length) return saved;
+  return { preset: "three", meals: MEAL_PLAN_PRESETS.three.meals, times: Object.assign({}, DEFAULT_MEAL_TIMES) };
+}
+
+function mealPlanEnabled() {
+  return !!(state.profile && state.profile.mealPlan);
+}
+
+// "12:00" を分に直す。比較しやすくするためだけのもの。
+function minutesOf(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || ""));
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+// 予定の時刻を過ぎているのに、その枠の記録がまだ無いもの。
+// 「まだ」であって「できていない」ではない。言い方はここで決まる。
+// nowMin は「その日の何分目か」。既定は今。
+// 外から渡せるようにしてあるのは検査のためで、これが無いと
+// 実行した時刻によって結果が変わり、判定を書けない。
+function pendingMeals(dateKey, nowMin) {
+  if (!mealPlanEnabled()) return [];
+  const plan = mealPlan();
+  const logs = Storage.getLogsForDate(dateKey || todayKey());
+  const done = new Set(logs.map((e) => e.meal));
+  if (nowMin == null) {
+    const now = new Date();
+    nowMin = now.getHours() * 60 + now.getMinutes();
+  }
+  return plan.meals.filter((k) => {
+    if (done.has(k)) return false;
+    const t = minutesOf(plan.times[k]);
+    // 予定の30分後から催促する。ぴったりに出すと、食べている最中に鳴る。
+    return t != null && nowMin >= t + 30;
+  });
+}
+
+// 端末のカレンダーに、毎日の予定として書き出す。
+//
+// なぜカレンダーなのか:
+// 本物のプッシュ通知には配信サーバーが要る。このアプリはサーバーを持たない
+// (だから恒久的に無料で、利用者のデータもどこにも送られない)。
+// 一方で端末のカレンダーは、時刻が来れば確実に鳴らしてくれる。
+// つまり「決めた時間に思い出させる」という目的だけを見れば、これで足りる。
+// 取り込みは一度だけで、以後は端末側が勝手にやってくれる。
+function buildMealIcs() {
+  const plan = mealPlan();
+  // 明日から始める。今日の分はもう過ぎている時刻があるため。
+  const base = new Date();
+  const start = new Date(base.getFullYear(), base.getMonth(), base.getDate() + 1);
+  const ymd = `${start.getFullYear()}${String(start.getMonth() + 1).padStart(2, "0")}${String(start.getDate()).padStart(2, "0")}`;
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//nutrition-tracker//meal-reminder//JA",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    "X-WR-CALNAME:食事の記録",
+  ];
+
+  plan.meals.forEach((key, i) => {
+    const hhmm = plan.times[key] || DEFAULT_MEAL_TIMES[key];
+    if (!minutesOf(hhmm)) return;
+    const hm = hhmm.replace(":", "") + "00";
+    const label = MEALS[key].label;
+    lines.push(
+      "BEGIN:VEVENT",
+      // 端末の時刻をそのまま使う「浮動時間」。旅行しても現地の12時に鳴る。
+      `UID:meal-${key}-${ymd}-${i}@nutrition-tracker`,
+      `DTSTAMP:${stamp}`,
+      `DTSTART:${ymd}T${hm}`,
+      "DURATION:PT10M",
+      "RRULE:FREQ=DAILY",
+      `SUMMARY:${label}を記録`,
+      "DESCRIPTION:写真を1枚撮るだけ。撮り忘れた日も、あとから入れられます。",
+      "BEGIN:VALARM",
+      "ACTION:DISPLAY",
+      "TRIGGER:PT0M",
+      `DESCRIPTION:${label}を記録`,
+      "END:VALARM",
+      "END:VEVENT"
+    );
+  });
+
+  lines.push("END:VCALENDAR");
+  // RFC 5545 は改行を CRLF と定めている。LF だけだと取り込めない端末がある。
+  return lines.join("\r\n") + "\r\n";
+}
+
+function downloadMealIcs() {
+  const plan = mealPlan();
+  if (!plan.meals.length) { showToast("先に食事の時間を決めてください"); return; }
+  const blob = new Blob([buildMealIcs()], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "meal-reminder.ics";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  buzz();
+  showToast("カレンダーの予定を書き出しました");
+}
+
+// ---------------- 時間割の設定 ----------------
+
+function openMealPlanSheet() {
+  const plan = mealPlan();
+  const presetRows = Object.entries(MEAL_PLAN_PRESETS).map(([k, v]) => `
+    <label class="check-row">
+      <input type="radio" name="mp-preset" value="${k}" ${plan.preset === k ? "checked" : ""}>
+      <span>${v.label}</span>
+    </label>`).join("");
+
+  const timeRows = MEAL_ORDER.map((k) => `
+    <div class="field-row" data-meal-row="${k}" ${plan.meals.includes(k) ? "" : 'style="display:none;"'}>
+      <span class="field-label">${MEALS[k].label}</span>
+      <input type="time" id="mp-${k}" value="${plan.times[k] || DEFAULT_MEAL_TIMES[k]}">
+    </div>`).join("");
+
+  openSheet("食事の時間を決める", `
+    <div id="mealplan-sheet">
+      <p class="guide-lead">
+        <strong>先に決めておくと続きます。</strong>決めた時刻を過ぎてまだ記録が無いとき、
+        アプリを開いたときに声をかけます。カレンダーに書き出せば、端末が時刻に鳴らしてくれます。
+      </p>
+
+      <div class="group">
+        <div class="group-title">1日に何回</div>
+        <div class="list">${presetRows}</div>
+      </div>
+
+      <div class="group">
+        <div class="group-title">時刻</div>
+        <div class="list">${timeRows}</div>
+        <div class="group-note">その時刻の30分後から声をかけます。食べている最中に催促しないためです。</div>
+      </div>
+
+      <div class="actions">
+        <button type="button" class="btn btn-primary" data-action="mealplan-save">保存する</button>
+        ${mealPlanEnabled() ? `<button type="button" class="btn btn-plain" data-action="mealplan-off">決めるのをやめる</button>` : ""}
+      </div>
+
+      <div class="group" style="margin-top:26px;">
+        <div class="group-title">端末に鳴らしてもらう</div>
+        <div class="list">
+          <button type="button" class="row with-icon tappable" data-action="mealplan-ics">
+            <span class="row-icon">${iconHtml("calendar", 16)}</span>
+            <span class="row-main">
+              <span class="row-label">カレンダーに書き出す</span>
+              <span class="row-sub">毎日の予定として取り込みます</span>
+            </span>
+            <span class="row-chevron">${iconHtml("chevron", 14)}</span>
+          </button>
+        </div>
+        <div class="group-note">
+          押すとカレンダー用のファイルができます。開いて取り込むと、
+          <strong>決めた時刻に端末が通知を出します。</strong>取り込みは一度だけで済みます。
+          iPhone でも Android でも使えます。<br>
+          やめたいときは、カレンダー側でその予定を消してください。
+        </div>
+      </div>
+    </div>
+  `);
+}
+
+function updateMealPlanRows() {
+  const picked = $("input[name=mp-preset]:checked")?.value || "three";
+  const meals = MEAL_PLAN_PRESETS[picked].meals;
+  MEAL_ORDER.forEach((k) => {
+    const row = $(`[data-meal-row="${k}"]`);
+    if (row) row.style.display = meals.includes(k) ? "" : "none";
+  });
+}
+
+function saveMealPlanSheet() {
+  const preset = $("input[name=mp-preset]:checked")?.value || "three";
+  const meals = MEAL_PLAN_PRESETS[preset].meals;
+  const times = {};
+  MEAL_ORDER.forEach((k) => {
+    const v = $(`#mp-${k}`)?.value;
+    times[k] = minutesOf(v) != null ? v : DEFAULT_MEAL_TIMES[k];
+  });
+  state.profile.mealPlan = { preset, meals, times };
+  Storage.saveProfile(state.profile);
+  buzz();
+  closeSheet();
+  render();
+  showToast(`${MEAL_PLAN_PRESETS[preset].label}で決めました`);
+}
+
+function clearMealPlan() {
+  state.profile.mealPlan = null;
+  Storage.saveProfile(state.profile);
+  buzz();
+  closeSheet();
+  render();
+  showToast("時間割をやめました");
+}
+
+// 決めた時刻を過ぎているのに記録が無いとき、開いた人に声をかける。
+//
+// Duolingo が続くのは、しつこく言ってくるからだけではなく、
+// 「あと少しで途切れる」という具体的な損失を見せるから。
+// ただしこのアプリは減点しないので、責める言い方はしない。
+// 「できていない」ではなく「まだ」、「サボった」ではなく「あとから入れられる」。
+function nudgeHtml(nowMin) {
+  if (!mealPlanEnabled()) return "";
+  const pend = pendingMeals(null, nowMin);
+  if (!pend.length) return "";
+
+  const streak = streakDays();
+  const todayCount = Storage.getLogsForDate(todayKey()).length;
+  const names = pend.map((k) => MEALS[k].label).join("と");
+
+  // 連続記録が伸びている人には、それが途切れることを先に伝える。
+  // 事実を言うだけで、責めてはいない。
+  const sub = streak >= 2 && todayCount === 0
+    ? `${streak}日続いています。今日まだ1件も入っていません。`
+    : "写真を1枚撮るだけで終わります。";
+
+  return `
+    <div class="nudge">
+      <div class="nudge-main">
+        <span class="nudge-title">${escapeHtml(names)}の記録がまだです</span>
+        <span class="nudge-sub">${escapeHtml(sub)}</span>
+      </div>
+      <button type="button" class="btn btn-primary btn-sm" data-action="nudge-record">${iconHtml("camera", 15)} 記録する</button>
+    </div>
+  `;
+}
+
 // ---------------- 撮り忘れた日を、後から埋める ----------------
 
 // ズボラな人が記録をやめる一番の理由は「その場で撮り忘れて、そのまま放置する」こと。
@@ -2193,6 +2463,7 @@ function renderHome() {
     : "";
 
   return `
+    ${nudgeHtml()}
     <div class="nav-bar">
       <div>
         <div class="footnote" style="margin-bottom:2px;">${greeting()}・${formatDateLabel(todayKey())}</div>
@@ -2791,6 +3062,16 @@ function renderSettings() {
             <span class="row-sub">${autoLogEnabled() ? "記録まで自動で進みます" : "確かめてから記録します"}</span>
           </span>
           <span class="row-value">${autoLogEnabled() ? "オン" : "オフ"}</span>
+        </button>
+        <button type="button" class="row with-icon tappable" data-action="open-mealplan">
+          <span class="row-icon">${iconHtml("calendar", 16)}</span>
+          <span class="row-main">
+            <span class="row-label">食事の時間を決める</span>
+            <span class="row-sub">${mealPlanEnabled()
+              ? `${MEAL_PLAN_PRESETS[mealPlan().preset]?.label || "設定済み"}・声かけあり`
+              : "決めておくと続きます"}</span>
+          </span>
+          <span class="row-chevron">${iconHtml("chevron", 14)}</span>
         </button>
         <button type="button" class="row with-icon tappable" data-action="toggle-instant-camera">
           <span class="row-icon">${iconHtml("camera", 16)}</span>

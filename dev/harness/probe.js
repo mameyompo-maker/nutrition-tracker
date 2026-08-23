@@ -467,6 +467,90 @@
       state.capture = CAPTURE_INITIAL();
     }
 
+
+    // --- 食事の時間割と声かけ ---
+    ok("時間割は既定で決めていない", mealPlanEnabled() === false);
+    ok("決めていなくても既定の時刻は持つ", mealPlan().meals.length === 3 && !!mealPlan().times.lunch);
+    ok("決めていなければ声をかけない", nudgeHtml() === "");
+
+    {
+      // 時刻は外から渡す。実行した時刻に結果が左右されないようにするため。
+      const NOON = 13 * 60;   // 13:00 のつもり
+      const savedPlan = state.profile.mealPlan;
+      const savedLogs = Storage.getAllLogs();
+
+      Storage.setAllLogs(Object.assign({}, savedLogs, { [todayKey()]: [] }));
+      state.profile.mealPlan = {
+        preset: "two",
+        meals: ["breakfast", "dinner"],
+        times: { breakfast: "07:30", dinner: "19:00" },
+      };
+
+      const pend = pendingMeals(null, NOON);
+      ok("過ぎた枠だけを催促する", pend.length === 1 && pend[0] === "breakfast", JSON.stringify(pend));
+      ok("これからの枠は催促しない", !pend.includes("dinner"));
+
+      const html = nudgeHtml(NOON);
+      ok("催促が出る", html.includes("朝食") && html.includes("まだです"), html.slice(0, 60));
+      ok("責める言葉を使わない", !/サボ|できていません|守れて|失敗/.test(html));
+      ok("1タップで記録に行ける", html.includes('data-action="nudge-record"'));
+
+      // 記録を入れたら、その枠はもう催促しない
+      Storage.addLog(todayKey(), {
+        id: newEntryId(), time: "08:00", name: "テスト朝食", meal: "breakfast",
+        items: [], nutrients: { calories: 400 }, note: "", thumb: null,
+      });
+      ok("記録した枠は催促しない", pendingMeals(null, NOON).length === 0);
+      ok("催促が消える", nudgeHtml(NOON) === "");
+
+      // 30分の猶予（時刻ぴったりでは催促しない）
+      Storage.setAllLogs(Object.assign({}, Storage.getAllLogs(), { [todayKey()]: [] }));
+      state.profile.mealPlan.times.breakfast = "12:50";
+      ok("時刻の直後は催促しない(30分の猶予)", !pendingMeals(null, NOON).includes("breakfast"));
+      state.profile.mealPlan.times.breakfast = "12:20";
+      ok("30分たてば催促する", pendingMeals(null, NOON).includes("breakfast"));
+
+      // --- カレンダーへの書き出し ---
+      state.profile.mealPlan = {
+        preset: "three",
+        meals: ["breakfast", "lunch", "dinner"],
+        times: { breakfast: "07:30", lunch: "12:00", dinner: "19:00" },
+      };
+      const ics = buildMealIcs();
+      ok("カレンダー形式で始まり終わる",
+         ics.startsWith("BEGIN:VCALENDAR") && ics.trim().endsWith("END:VCALENDAR"));
+      ok("改行がCRLF", ics.includes("\r\n") && !/[^\r]\n/.test(ics));
+      ok("食事の数だけ予定を作る", (ics.match(/BEGIN:VEVENT/g) || []).length === 3);
+      ok("毎日くり返す", (ics.match(/RRULE:FREQ=DAILY/g) || []).length === 3);
+      ok("通知が付いている", (ics.match(/BEGIN:VALARM/g) || []).length === 3);
+      ok("時刻が入っている", ics.includes("T073000") && ics.includes("T120000") && ics.includes("T190000"));
+      ok("端末の時刻をそのまま使う(末尾にZを付けない)", !/DTSTART:\d+T\d+Z/.test(ics));
+      ok("予定に名前が付く", ics.includes("SUMMARY:朝食を記録"));
+
+      // 後片付け
+      state.profile.mealPlan = savedPlan;
+      Storage.setAllLogs(savedLogs);
+    }
+
+    setView("settings");
+    await wait(80);
+    ok("設定に「食事の時間を決める」がある", txt().includes("食事の時間を決める"));
+    click('[data-action="open-mealplan"]');
+    await wait(140);
+    ok("時間割のシートが開く", !!sel("#mealplan-sheet"));
+    ok("回数を選べる", document.querySelectorAll("input[name=mp-preset]").length === 3);
+    ok("時刻を入れられる", !!sel("#mp-lunch"));
+    ok("カレンダーへの書き出しがある", !!sel('[data-action="mealplan-ics"]'));
+    {
+      // 2食を選ぶと、朝食の行が隠れる
+      const two = sel('input[name=mp-preset][value="two"]');
+      if (two) { two.checked = true; updateMealPlanRows(); }
+      ok("回数に応じて時刻の行が変わる",
+         sel('[data-meal-row="breakfast"]')?.style.display === "none");
+    }
+    closeSheet();
+    await wait(60);
+
     // 仕上げ
     errors.forEach((e) => { fails++; out.push("FAIL  " + e); });
     const div = document.createElement("div");

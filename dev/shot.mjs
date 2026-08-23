@@ -15,7 +15,10 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 const VIEWS = ["home", "capture", "trends", "history", "settings"];
-const SHEETS = { entry: "home", share: "home", basis: "settings", weight: "trends", manual: "capture", guide: "settings" };
+const SHEETS = {
+  entry: "home", share: "home", basis: "settings", weight: "trends",
+  manual: "capture", guide: "settings", mealplan: "settings", targets: "settings",
+};
 
 const args = process.argv.slice(2);
 const dark = args.includes("--dark");
